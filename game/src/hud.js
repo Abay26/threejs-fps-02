@@ -23,7 +23,8 @@ export function createHud() {
     spike: $('spike'), spikeTimer: $('spike-timer'), minimap: $('minimap'),
     flash: $('flash'), scope: $('scope'), grenades: $('grenades'),
     flashCount: $('grenade-flash'), smokeCount: $('grenade-smoke'),
-    damageDir: $('damage-dir'), rounds: $('rounds'),
+    damageDir: $('damage-dir'), rounds: $('rounds'), comms: $('comms'),
+    strat: $('strat'), buyNote: $('buy-note'),
   };
   const mapCtx = els.minimap.getContext('2d');
   let hitTimer = null;
@@ -39,7 +40,7 @@ export function createHud() {
     els.overlay.hidden = false;
     if (kind === 'start') {
       els.overlayTitle.innerHTML = 'SALTLINE <span class="tag">TERMINAL</span>';
-      els.overlayCopy.textContent = 'A round-based tactical FPS at a night container port. Plant the spike at A or B, or eliminate the Sentinel team. Flash and smoke are yours — accuracy beats speed.';
+      els.overlayCopy.textContent = 'A round-based tactical FPS at a night container port. Plant the spike at A or B, or eliminate the Sentinel team. Your team plays a plan every round — A split, B rush, mid control — with radio callouts, and every bot buys to its own wallet. Right-click aims down sights; accuracy beats speed.';
       els.play.textContent = 'Click to play';
     } else if (kind === 'paused') {
       els.overlayTitle.textContent = 'Paused';
@@ -95,6 +96,23 @@ export function createHud() {
     els.killfeed.prepend(line);
     while (els.killfeed.children.length > 5) els.killfeed.lastChild.remove();
     setTimeout(() => line.remove(), 6000);
+  }
+
+  // Radio comms: the team's plan talking. A line per callout, newest on top,
+  // fading after a few seconds — the execute, the rotate, the site hit.
+  function comms(text) {
+    const line = document.createElement('div');
+    line.className = 'comms-line';
+    line.textContent = `▸ ${text}`;
+    els.comms.prepend(line);
+    while (els.comms.children.length > 4) els.comms.lastChild.remove();
+    setTimeout(() => line.remove(), 7000);
+  }
+
+  function clearComms() { els.comms.innerHTML = ''; }
+
+  function setStrat(name) {
+    els.strat.textContent = name ? `STRAT · ${name}` : '';
   }
 
   function hitMarker(killed) {
@@ -173,9 +191,10 @@ export function createHud() {
     els.spikeTimer.textContent = seconds.toFixed(1);
   }
 
-  function showBuy(money, items, owned) {
+  function showBuy(money, items, owned, note = '') {
     els.buy.hidden = false;
     els.buyMoney.textContent = `$${money}`;
+    els.buyNote.textContent = note;
     const list = $('buy-items');
     list.innerHTML = '';
     for (const item of items) {
@@ -196,9 +215,10 @@ export function createHud() {
 
   // Minimap: the terminal from above. Colliders are the walls and cover; dots are
   // the player (white, with a facing wedge), teammates (amber dots), enemies (red,
-  // only while they are visible to the player) and the spike (red diamond). Smoke
-  // clouds draw as grey circles, so a smoked doorway reads on the map.
-  function drawMinimap(colliders, player, bots, spikePos, clouds) {
+  // only while they are visible to the player — visibleEnemies names them) and
+  // the spike (red diamond). Smoke clouds draw as grey circles, so a smoked
+  // doorway reads on the map.
+  function drawMinimap(colliders, player, bots, spikePos, clouds, visibleEnemies = null) {
     const w = 148;
     const h = 108;
     const scaleX = w / 76;
@@ -237,7 +257,12 @@ export function createHud() {
     }
     for (const bot of bots) {
       if (!bot.alive) continue;
-      mapCtx.fillStyle = bot.team === 'vanguard' ? PALETTE.amber : '#e2483d';
+      if (bot.team === 'vanguard') {
+        mapCtx.fillStyle = PALETTE.amber;
+      } else {
+        if (visibleEnemies && !visibleEnemies.has(bot)) continue;
+        mapCtx.fillStyle = '#e2483d';
+      }
       mapCtx.beginPath();
       mapCtx.arc(toX(bot.position.x), toY(bot.position.z), 2.5, 0, Math.PI * 2);
       mapCtx.fill();
@@ -258,7 +283,7 @@ export function createHud() {
 
   return {
     showOverlay, hideOverlay, setHealth, setAmmo, setMoney, setTimer, setScore,
-    setAlive, setRoundHistory, killfeed, hitMarker, damageFlash, damageDirection,
+    setAlive, setRoundHistory, killfeed, comms, clearComms, setStrat, hitMarker, damageFlash, damageDirection,
     flashBang, setScope, setGrenades, banner, hideBanner, setCrosshairSpread,
     setPlant, setSpike, showBuy, hideBuy, drawMinimap,
     onPlay(handler) { playHandler = handler; },

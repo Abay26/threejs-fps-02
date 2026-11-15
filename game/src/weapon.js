@@ -5,7 +5,10 @@
 // with sustained fire and resets when you stop, moving and airborne fire is punished,
 // crouching and standing still are rewarded, and damage falls off past each gun's
 // effective range. The Mastiff sniper zooms (right mouse) to a scope with a narrow
-// field of view. Tracers and sparks are pooled so a firefight never allocates.
+// field of view; the Falcon and Jackal aim down sights on right mouse instead — a
+// smaller zoom that tightens the spread, so holding an angle pays. Every gun also
+// has a recoil pattern: the kick of each shot in a burst follows a fixed table,
+// so a burst can be learned and controlled instead of fought at random.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
@@ -14,31 +17,36 @@ export const WEAPONS = {
     name: 'Kestrel', kind: 'Pistol', price: 0, damage: 34, headDamage: 100,
     rate: 0.16, mag: 12, reserve: 36, reload: 1.1, spread: 0.006, range: 60,
     falloffStart: 25, auto: false, tracer: 0xffe1a0, bloom: 0.0012, bloomMax: 0.010,
-    pellets: 1, movePenalty: 0.5,
+    pellets: 1, movePenalty: 0.5, ads: true, adsSpread: 0.6,
+    pattern: [[0.008, 0], [0.009, 0.002], [0.009, -0.002]],
   },
   jackal: {
     name: 'Jackal', kind: 'SMG', price: 1500, damage: 26, headDamage: 104,
     rate: 0.07, mag: 32, reserve: 96, reload: 1.8, spread: 0.009, range: 55,
     falloffStart: 18, auto: true, tracer: 0xffe1a0, bloom: 0.0016, bloomMax: 0.016,
-    pellets: 1, movePenalty: 0.45,
+    pellets: 1, movePenalty: 0.45, ads: true, adsSpread: 0.55,
+    pattern: [[0.007, 0], [0.008, 0.003], [0.008, -0.003], [0.009, 0.002], [0.009, -0.002], [0.01, 0.003]],
   },
   falcon: {
     name: 'Falcon', kind: 'Rifle', price: 2700, damage: 33, headDamage: 132,
     rate: 0.1, mag: 30, reserve: 90, reload: 2.2, spread: 0.004, range: 90,
     falloffStart: 35, auto: true, tracer: 0xffc860, bloom: 0.0015, bloomMax: 0.013,
-    pellets: 1, movePenalty: 0.6,
+    pellets: 1, movePenalty: 0.6, ads: true, adsSpread: 0.55,
+    pattern: [[0.011, 0], [0.012, 0.002], [0.013, -0.002], [0.012, 0.003], [0.014, -0.003], [0.013, 0.002], [0.015, -0.002]],
   },
   boar: {
     name: 'Boar', kind: 'Shotgun', price: 2100, damage: 14, headDamage: 28,
     rate: 0.85, mag: 6, reserve: 24, reload: 2.6, spread: 0.028, range: 28,
     falloffStart: 10, auto: false, tracer: 0xffd27a, bloom: 0.004, bloomMax: 0.03,
-    pellets: 8, movePenalty: 0.7,
+    pellets: 8, movePenalty: 0.7, ads: false, adsSpread: 1,
+    pattern: [[0.02, 0.004]],
   },
   mastiff: {
     name: 'Mastiff', kind: 'Sniper', price: 4750, damage: 110, headDamage: 220,
     rate: 1.1, mag: 5, reserve: 15, reload: 3.1, spread: 0.0008, range: 120,
     falloffStart: 60, auto: false, tracer: 0xfff2c0, bloom: 0.002, bloomMax: 0.006,
-    pellets: 1, movePenalty: 1.4, scoped: true,
+    pellets: 1, movePenalty: 1.4, scoped: true, ads: false, adsSpread: 1,
+    pattern: [[0.03, 0.002]],
   },
 };
 
@@ -46,12 +54,15 @@ export function createWeapon(camera, audio) {
   const state = {
     id: 'kestrel', mag: WEAPONS.kestrel.mag, reserve: WEAPONS.kestrel.reserve,
     cooldown: 0, reloading: 0, bobPhase: 0, kick: 0, flash: 0, bloom: 0,
+    ads: false, shotIndex: 0,
   };
 
   // Viewmodel: a gun assembled from dark boxes, held low-right of the camera. Each
   // gun gets its own silhouette — the Boar is wide and short, the Mastiff long.
+  // The metal is light enough to read against the night, and the magazine and
+  // front post give it a rifle's outline instead of a slab's.
   const gun = new THREE.Group();
-  const gunMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#23262b'), roughness: 0.45, metalness: 0.6 });
+  const gunMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#3a3f47'), roughness: 0.4, metalness: 0.65 });
   const accentMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.amber), roughness: 0.4, metalness: 0.4 });
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.13, 0.52), gunMat);
   const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.3), gunMat);
@@ -61,12 +72,17 @@ export function createWeapon(camera, audio) {
   grip.rotation.x = 0.35;
   const sight = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.05, 0.06), accentMat);
   sight.position.set(0, 0.09, -0.1);
+  const frontPost = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.06, 0.015), accentMat);
+  frontPost.position.set(0, 0.08, -0.48);
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.2, 0.09), gunMat);
+  mag.position.set(0, -0.14, -0.05);
+  mag.rotation.x = 0.12;
   const stock = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.11, 0.22), gunMat);
   stock.position.set(0, -0.02, 0.32);
-  gun.add(body, barrel, grip, sight, stock);
+  gun.add(body, barrel, grip, sight, frontPost, mag, stock);
   // Held further out and angled slightly in, so the viewmodel reads as a gun
   // in the corner of the frame instead of a slab across it.
-  gun.position.set(0.3, -0.27, -0.66);
+  gun.position.set(0.3, -0.26, -0.58);
   gun.rotation.y = -0.1;
   gun.scale.setScalar(0.8);
   camera.add(gun);
@@ -126,8 +142,9 @@ export function createWeapon(camera, audio) {
     state.reloading = 0;
     state.cooldown = 0;
     state.bloom = 0;
+    state.shotIndex = 0;
     const scale = id === 'mastiff' ? 1.3 : id === 'boar' ? 1.15 : id === 'jackal' ? 0.9 : 1;
-    gun.scale.setScalar(scale * 0.8);
+    gun.scale.setScalar(scale * 0.9);
   }
 
   function refill() {
@@ -146,8 +163,19 @@ export function createWeapon(camera, audio) {
     state.kick = 1;
     state.flash = 1;
     state.bloom = Math.min(def().bloomMax, state.bloom + def().bloom);
+    state.shotIndex += 1;
     return true;
   }
+
+  // The recoil pattern: the kick of the shot just fired, from the gun's fixed
+  // table — the first shots climb, later ones drift, and the pattern repeats,
+  // so a burst can be learned and pulled down instead of fought at random.
+  function patternKick() {
+    const pattern = def().pattern;
+    return pattern[Math.min(state.shotIndex - 1, pattern.length - 1)];
+  }
+
+  function setAds(on) { state.ads = on && def().ads === true; }
 
   function reload() {
     if (state.reloading > 0 || state.mag === def().mag || state.reserve <= 0) return;
@@ -176,13 +204,15 @@ export function createWeapon(camera, audio) {
   }
 
   // Current spread: base, plus bloom from sustained fire, plus a movement penalty
-  // that grows with speed and doubles in the air, halved while crouched.
+  // that grows with speed and doubles in the air, halved while crouched — and
+  // tightened while aiming down sights.
   function spread(speed, crouched, airborne) {
     const w = def();
     let s = w.spread + state.bloom;
     s *= 1 + (speed / 6.6) * w.movePenalty;
     if (airborne) s *= 1.8;
     if (crouched) s *= 0.55;
+    if (state.ads) s *= w.adsSpread;
     return s;
   }
 
@@ -215,7 +245,7 @@ export function createWeapon(camera, audio) {
     flashLight.intensity = state.flash * 14;
     state.bobPhase += dt * (2 + speed * 1.6);
     const bob = Math.sin(state.bobPhase * 2) * 0.008 * Math.min(1, speed / 4);
-    gun.position.set(0.3, -0.27 + bob, -0.66 + state.kick * 0.06);
+    gun.position.set(0.3, -0.26 + bob, -0.58 + state.kick * 0.06);
     gun.rotation.x = state.kick * 0.09;
     for (const t of tracers) {
       if (t.life > 0) {
@@ -231,5 +261,6 @@ export function createWeapon(camera, audio) {
 
   return {
     state, def, equip, refill, ready, takeRound, reload, fireVisual, spread, damageAt, step,
+    patternKick, setAds,
   };
 }

@@ -75,6 +75,11 @@
   #killfeed { position: fixed; top: 136px; right: 20px; display: grid; gap: 4px; font-size: 13px; color: var(--muted); text-align: right; }
   #killfeed b { color: var(--ink); }
 
+  /* Radio comms under the killfeed: the team's plan talking, newest on top. */
+  #comms { position: fixed; top: 236px; right: 20px; display: grid; gap: 4px; font-size: 12px; color: var(--accent); text-align: right; max-width: 340px; }
+  .comms-line { text-shadow: 0 1px 3px #000; }
+  #strat { position: fixed; top: 100px; left: 50%; transform: translateX(-50%); font-family: var(--font-readout); font-size: 11px; letter-spacing: 2px; color: var(--accent); }
+
   #health { position: fixed; left: 32px; bottom: 24px; width: 220px; font-family: var(--font-readout); }
   #health .row { display: flex; align-items: baseline; gap: 8px; }
   #health-num { font-size: 44px; line-height: 1; }
@@ -118,6 +123,7 @@
   #buy[hidden] { display: none; }
   #buy h2 { margin: 0 0 4px; font-size: 20px; }
   #buy .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+  #buy-note { color: var(--accent); font-size: 12px; font-family: var(--font-readout); margin-bottom: 8px; min-height: 15px; }
   #buy-money { color: var(--accent); font-family: var(--font-readout); font-size: 18px; }
   .buy-item { display: grid; grid-template-columns: 28px 1fr auto; gap: 4px 10px; width: 100%; text-align: left;
     padding: 10px 8px; background: none; border: none; border-bottom: 1px solid var(--hairline);
@@ -162,8 +168,10 @@
     <div class="team s"><span class="alive" id="alive-s">●●●●●</span><b id="score-s">0</b><span>SENTINEL</span></div>
   </div>
   <div id="rounds"></div>
+  <div id="strat"></div>
   <canvas id="minimap" width="148" height="108"></canvas>
   <div id="killfeed"></div>
+  <div id="comms"></div>
 
   <div id="health">
     <div class="row"><span id="health-num">100</span><span class="label">HP</span></div>
@@ -185,6 +193,7 @@
   <div id="buy" hidden>
     <h2>Buy phase</h2>
     <div class="sub">Your funds: <span id="buy-money">$800</span> · closes when the round goes live</div>
+    <div id="buy-note"></div>
     <div id="buy-items"></div>
   </div>
 </div>
@@ -192,13 +201,13 @@
 <div id="overlay" class="overlay">
   <section class="panel" role="dialog" aria-modal="true" aria-labelledby="overlay-title">
     <h1 id="overlay-title">SALTLINE <span class="tag">TERMINAL</span></h1>
-    <p id="overlay-copy">A round-based tactical FPS at a night container port. Plant the spike at A or B, or eliminate the Sentinel team. Buy between rounds — accuracy beats speed.</p>
+    <p id="overlay-copy">A round-based tactical FPS at a night container port. Plant the spike at A or B, or eliminate the Sentinel team. Your team plays a plan every round — A split, B rush, mid control — with radio callouts, and every bot buys to its own wallet. Right-click aims down sights; accuracy beats speed.</p>
     <button id="play" type="button">Click to play</button>
     <ul class="keys">
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move · <kbd>Shift</kbd> Sprint · <kbd>Ctrl</kbd> Crouch</li>
-      <li><kbd>Mouse</kbd> Look · <kbd>Click</kbd> Fire · <kbd>R</kbd> Reload · <kbd>Right-click</kbd> Scope (Mastiff)</li>
+      <li><kbd>Mouse</kbd> Look · <kbd>Click</kbd> Fire · <kbd>R</kbd> Reload · <kbd>Right-click</kbd> Aim / Scope</li>
       <li><kbd>E</kbd> Plant / defuse the spike (hold) · <kbd>G</kbd> Throw grenade · <kbd>Q</kbd> Switch flash / smoke</li>
-      <li><kbd>B</kbd> Buy menu · <kbd>1</kbd>–<kbd>8</kbd> Buy · <kbd>Space</kbd> Jump</li>
+      <li><kbd>B</kbd> Buy menu · <kbd>1</kbd>–<kbd>9</kbd> Buy · <kbd>Space</kbd> Jump</li>
     </ul>
   </section>
 </div>

@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { WAYPOINTS, SITES } from './world.js';
 import { WEAPONS } from './weapon.js';
 import { PALETTE } from './palette.js';
+import { buyForBot, CALLOUTS } from './strat.js';
 
 const NAMES_V = ['Rook', 'Havoc', 'Juno', 'Moss'];
 const NAMES_S = ['Bishop', 'Warden', 'Kite', 'Sable', 'Frost'];
@@ -23,29 +24,37 @@ const eye = new THREE.Vector3();
 const targetPos = new THREE.Vector3();
 const probe = new THREE.Vector3();
 
-function bfsPath(fromId, toId) {
+function shortestPath(fromId, toId) {
+  // Dijkstra over the waypoint graph, minimizing walked metres — not hops. A
+  // hop-count search sends a retaking Sentinel on the 56 m north corridor
+  // from site B to site A when the west flank is shorter, and the retake
+  // then never arrives before the fuse runs out.
   if (fromId === toId) return [toId];
+  const dist = new Map([[fromId, 0]]);
   const prev = new Map([[fromId, null]]);
-  const queue = [fromId];
-  while (queue.length > 0) {
-    const current = queue.shift();
+  const done = new Set();
+  while (true) {
+    let current = -1;
+    let best = Infinity;
+    for (const [id, d] of dist) {
+      if (!done.has(id) && d < best) { best = d; current = id; }
+    }
+    if (current === -1) return [toId];
+    if (current === toId) {
+      const path = [toId];
+      let node = toId;
+      while (prev.get(node) !== null) { node = prev.get(node); path.unshift(node); }
+      return path;
+    }
+    done.add(current);
     for (const next of WAYPOINTS[current].n) {
-      if (!prev.has(next)) {
+      const nd = dist.get(current) + WAYPOINTS[current].p.distanceTo(WAYPOINTS[next].p);
+      if (nd < (dist.get(next) ?? Infinity)) {
+        dist.set(next, nd);
         prev.set(next, current);
-        if (next === toId) {
-          const path = [toId];
-          let node = next;
-          while (prev.get(node) !== null) {
-            node = prev.get(node);
-            path.unshift(node);
-          }
-          return path;
-        }
-        queue.push(next);
       }
     }
   }
-  return [toId];
 }
 
 function nearestWaypoint(position) {
@@ -59,9 +68,13 @@ function nearestWaypoint(position) {
 }
 
 export function createBots(scene, world, senses, grenades, hooks) {
-  const { audio, onKill, onPlayerDamaged, onSpikePlanted, onSpikeDefused, fireTracer } = hooks;
+  const { audio, onKill, onPlayerDamaged, onSpikePlanted, onSpikeDefused, fireTracer, onCallout } = hooks;
   const bots = [];
   let frozen = false;
+  let lastBuys = [];
+  // The spike object of the round in progress, kept so a dying carrier can
+  // drop it — damageBot runs outside step()'s parameter scope.
+  let activeSpike = null;
 
   function makeBody(team) {
     const group = new THREE.Group();
@@ -78,8 +91,12 @@ export function createBots(scene, world, senses, grenades, hooks) {
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.34), suit);
     head.position.y = 1.72;
     head.userData.isHead = true;
-    // Visor strip, so a head is readable at a glance in the dark.
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 0.02), accent);
+    // Visor strip, unlit and bright, so a head is readable at a glance in the
+    // dark — amber for Vanguard, teal for Sentinel, visible down a whole lane.
+    const visor = new THREE.Mesh(
+      new THREE.BoxGeometry(0.3, 0.09, 0.02),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(team === 'vanguard' ? PALETTE.amber : PALETTE.sentinel) }),
+    );
     visor.position.set(0, 1.74, -0.18);
     const legs = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, 0.3), suit);
     legs.position.y = 0.4;
@@ -117,6 +134,11 @@ export function createBots(scene, world, senses, grenades, hooks) {
       strafeDir: 1, strafeTimer: 0,
       target: null, hasSpike: false, channel: 0, channelKind: null,
       blinded: 0, investigate: null, smokedSite: false,
+      // Plan fields, set by applyPlan from the round's strat: the bot waits at
+      // spawn until stratDelay, then walks its lane and throws execUtility on
+      // the execute. wallet is the bot's own economy.
+      wallet: 800, stratDelay: 0, stratLane: null, execUtility: null, hasExecuted: false,
+      calledHit: false, calledRetake: false,
       site: team === 'vanguard' ? (Math.random() < 0.6 ? 'A' : 'B') : null,
       body, moving: false,
     };
@@ -124,31 +146,70 @@ export function createBots(scene, world, senses, grenades, hooks) {
     return bot;
   }
 
-  function spawnRound(random) {
+  function spawnRound(random, plan = null) {
+    // Wallets persist across rounds — a bot's economy is the match's memory.
+    const savedWallets = new Map(bots.map((b) => [b.name, b.wallet]));
     for (const bot of bots) scene.remove(bot.body.group);
     bots.length = 0;
     const vSpawns = [[-4, 22], [-1.5, 23], [1, 22], [3.5, 23]];
     const sSpawns = [[-4, -22], [-1.5, -23], [1, -22], [3.5, -23], [0, -20.5]];
-    const vWeapons = ['falcon', 'jackal', 'boar', 'mastiff'];
-    const sWeapons = ['falcon', 'falcon', 'jackal', 'mastiff', 'boar'];
     vSpawns.forEach(([x, z], i) => {
-      const bot = spawnBot(NAMES_V[i], 'vanguard', ROLES_V[i], new THREE.Vector3(x, 0, z), vWeapons[i]);
+      const bot = spawnBot(NAMES_V[i], 'vanguard', ROLES_V[i], new THREE.Vector3(x, 0, z), 'kestrel');
       bot.site = i < 2 ? 'A' : 'B';
       if (bot.role === 'lurker') bot.site = 'B';
     });
     sSpawns.forEach(([x, z], i) => {
-      const bot = spawnBot(NAMES_S[i], 'sentinel', ROLES_S[i], new THREE.Vector3(x, 0, z), sWeapons[i]);
+      const bot = spawnBot(NAMES_S[i], 'sentinel', ROLES_S[i], new THREE.Vector3(x, 0, z), 'kestrel');
       bot.site = i < 2 ? 'A' : i < 4 ? 'B' : null; // Frost holds mid
     });
+    // The round plan overwrites the defaults: each bot gets its site, its lane
+    // and its execute delay from the strat, then buys to its wallet's tier.
+    lastBuys = [];
+    if (plan) {
+      const vTeam = bots.filter((b) => b.team === 'vanguard');
+      const sTeam = bots.filter((b) => b.team === 'sentinel');
+      vTeam.forEach((bot, i) => {
+        const a = plan.vanguard.assignments[i];
+        if (!a) return;
+        bot.site = a.site;
+        bot.stratLane = a.lane;
+        bot.stratDelay = a.delay;
+        bot.execUtility = a.utility;
+        bot.hasExecuted = false;
+        bot.calledHit = false;
+        bot.calledRetake = false;
+      });
+      sTeam.forEach((bot, i) => {
+        const a = plan.sentinel.assignments[i];
+        if (!a) return;
+        bot.site = a.site;
+        bot.stratLane = a.lane;
+        bot.stratDelay = a.delay;
+        bot.execUtility = a.utility;
+        bot.hasExecuted = false;
+        bot.calledHit = false;
+        bot.calledRetake = false;
+      });
+    }
+    for (const bot of bots) {
+      if (savedWallets.has(bot.name)) bot.wallet = savedWallets.get(bot.name);
+      lastBuys.push(buyForBot(bot));
+    }
     void random;
   }
 
+  // The bot's own box, 0.7 wide and 1.7 tall, against every collider. NOTE: this
+  // used to alias its argument with the shared `probe` temp — collides(probe)
+  // would shift the box by -HALF on both axes, so a bot walking east or north
+  // could clip up to 0.35 m into a container and then wedge there forever,
+  // every later move failing both axes. The box is computed into locals first.
   function collides(pos) {
-    probe.set(pos.x - HALF, pos.y, pos.z - HALF);
+    const minX = pos.x - HALF;
     const maxX = pos.x + HALF;
+    const minZ = pos.z - HALF;
     const maxZ = pos.z + HALF;
     for (const c of world.colliders) {
-      if (probe.x < c.max.x && maxX > c.min.x && probe.y < c.max.y && (pos.y + HEIGHT) > c.min.y && probe.z < c.max.z && maxZ > c.min.z) return true;
+      if (minX < c.max.x && maxX > c.min.x && pos.y < c.max.y && (pos.y + HEIGHT) > c.min.y && minZ < c.max.z && maxZ > c.min.z) return true;
     }
     return false;
   }
@@ -239,6 +300,16 @@ export function createBots(scene, world, senses, grenades, hooks) {
       bot.body.group.rotation.x = -Math.PI / 2;
       bot.body.group.position.y = 0.25;
       if (attacker && attacker.name) onKill(attacker.name, bot.name, headshot);
+      // A kill pays $300 into the killer's wallet, bot or player.
+      if (attacker && attacker.wallet != null) attacker.wallet += 300;
+      // A dead carrier drops the spike where he fell, so a teammate can
+      // take it up instead of the round stalling on a corpse.
+      if (bot.hasSpike && activeSpike) {
+        bot.hasSpike = false;
+        activeSpike.status = 'dropped';
+        activeSpike.position.copy(bot.position);
+        activeSpike.carrier = null;
+      }
     }
   }
 
@@ -262,8 +333,26 @@ export function createBots(scene, world, senses, grenades, hooks) {
 
   function walkTo(bot, dt, targetId) {
     if (bot.path.length === 0 || bot.path[bot.path.length - 1] !== targetId) {
-      bot.path = bfsPath(nearestWaypoint(bot.position), targetId);
+      bot.path = shortestPath(nearestWaypoint(bot.position), targetId);
       bot.pathIndex = 0;
+    }
+    // A path planned from an older position can start at a waypoint the bot
+    // has already passed (a Sentinel that was holding site A retaking the
+    // same site, so the target never changed and the path was never
+    // re-planned). At the start of a path only, skip a first node the bot
+    // is already well past, or re-plan from where the bot actually is.
+    // (Re-planning on every step oscillates — the north hall's waypoints
+    // are close together, so the nearest one flips as the bot walks.)
+    if (bot.pathIndex === 0 && bot.path.length > 1) {
+      const first = WAYPOINTS[bot.path[0]].p;
+      const second = WAYPOINTS[bot.path[1]].p;
+      const dFirst = bot.position.distanceTo(first);
+      const dSecond = bot.position.distanceTo(second);
+      if (dFirst > 5 && dSecond < dFirst) bot.pathIndex = 1;
+      else if (dFirst > 8) {
+        bot.path = shortestPath(nearestWaypoint(bot.position), targetId);
+        bot.pathIndex = 0;
+      }
     }
     if (bot.pathIndex < bot.path.length) {
       const node = WAYPOINTS[bot.path[bot.pathIndex]];
@@ -277,6 +366,7 @@ export function createBots(scene, world, senses, grenades, hooks) {
   }
 
   function step(dt, player, spike, grenadesApi, canFight = true) {
+    activeSpike = spike;
     const clouds = grenadesApi.clouds;
     for (const bot of bots) {
       if (!bot.alive || frozen) continue;
@@ -294,9 +384,21 @@ export function createBots(scene, world, senses, grenades, hooks) {
         }
       }
 
-      // Fight first: an enemy in sight beats any objective.
+      // Fight first: an enemy in sight beats any objective. A Sentinel holding
+      // a site calls the hit once, so the team knows where the push is coming.
+      // One exception: a dropped spike nearby beats a duel — a Vanguard bot
+      // within 10 m of it breaks off to recover it instead of strafing in
+      // place while the round stalls with the spike lying at mid.
       const enemies = canFight ? visibleEnemies(bot, player, clouds) : [];
-      if (enemies.length > 0) {
+      const spikeNear = canFight && bot.team === 'vanguard' && spike.status === 'dropped'
+        && bot.position.distanceTo(spike.position) < 10;
+      // A retaking Sentinel does not abandon the defuse for a distant duel:
+      // within 15 m of a planted spike it only fights an enemy closer than
+      // 8 m, and otherwise keeps walking to the site.
+      const retaking = canFight && bot.team === 'sentinel' && spike.status === 'planted'
+        && bot.position.distanceTo(spike.position) < 15
+        && enemies.every((e) => e.dist > 8);
+      if (enemies.length > 0 && !spikeNear && !retaking) {
         const enemy = enemies[0];
         bot.state = 'fight';
         if (bot.target !== enemy.ref) {
@@ -304,6 +406,11 @@ export function createBots(scene, world, senses, grenades, hooks) {
           // Reaction time: faster up close and dead ahead, slower at range.
           bot.reaction = 0.55 - Math.min(0.3, enemy.strength * 0.3) + Math.random() * 0.15;
           bot.strafeTimer = 0;
+          if (bot.team === 'sentinel' && !bot.calledHit && onCallout) {
+            bot.calledHit = true;
+            const pushers = enemies.length;
+            onCallout(CALLOUTS.hit(bot.name, bot.site ?? 'MID', pushers));
+          }
         }
         const dx = enemy.pos.x - bot.position.x;
         const dz = enemy.pos.z - bot.position.z;
@@ -327,6 +434,19 @@ export function createBots(scene, world, senses, grenades, hooks) {
               bot.position.z = probe.z;
               bot.moving = true;
             }
+            // Push while duelling: at range, a bot advances on the enemy
+            // instead of strafing in place, so a fight moves the team toward
+            // its objective — and onto a dropped spike — instead of stalling
+            // mid-map for the whole round.
+            if (enemy.dist > 12) {
+              const adv = bot.speed * 0.5 * dt;
+              probe.set(bot.position.x + (dx / enemy.dist) * adv, 0, bot.position.z + (dz / enemy.dist) * adv);
+              if (!collides(probe)) {
+                bot.position.x = probe.x;
+                bot.position.z = probe.z;
+                bot.moving = true;
+              }
+            }
           }
           shootAt(bot, enemy, dt);
         }
@@ -340,6 +460,10 @@ export function createBots(scene, world, senses, grenades, hooks) {
       // the first one through the door smokes it.
       if (canFight && bot.team === 'sentinel' && spike.status === 'planted') {
         bot.state = 'retake';
+        if (!bot.calledRetake && onCallout) {
+          bot.calledRetake = true;
+          onCallout(CALLOUTS.retake(bot.name, spike.site));
+        }
         const site = SITES[spike.site];
         if (!bot.smokedSite && bot.position.distanceTo(site.center) < 14) {
           bot.smokedSite = true;
@@ -357,7 +481,14 @@ export function createBots(scene, world, senses, grenades, hooks) {
           bot.body.group.rotation.y = bot.yaw;
           continue;
         }
-        walkTo(bot, dt, spike.site === 'A' ? 13 : 14);
+        // Walk the graph to the site, then steer straight at the spike once
+        // close — the site waypoint alone can sit 2 m from where the spike
+        // actually lies, which is outside the 1.6 m defuse reach.
+        if (bot.position.distanceTo(spike.position) < 6) {
+          moveBot(bot, dt, spike.position.x, spike.position.z);
+        } else {
+          walkTo(bot, dt, spike.site === 'A' ? 13 : 14);
+        }
         bot.body.group.position.copy(bot.position);
         bot.body.group.rotation.y = bot.yaw;
         continue;
@@ -371,6 +502,10 @@ export function createBots(scene, world, senses, grenades, hooks) {
           bot.channelKind = 'plant';
           if (bot.channel >= 3) {
             bot.channel = 0;
+            // The spike is on the ground now, not in the carrier's hands —
+            // if he dies after planting, the spike must stay planted.
+            bot.hasSpike = false;
+            if (onCallout) onCallout(CALLOUTS.plant(bot.name, bot.site));
             onSpikePlanted(bot.site, bot.position.clone());
           }
           bot.body.group.position.copy(bot.position);
@@ -381,10 +516,12 @@ export function createBots(scene, world, senses, grenades, hooks) {
       bot.channel = 0;
       bot.channelKind = null;
 
-      // Pick up a dropped spike.
+      // Pick up a dropped spike. This runs before the execute clock, so a bot
+      // standing on the spike takes it even while the team is still waiting.
       if (spike.status === 'dropped' && bot.team === 'vanguard') {
-        if (bot.position.distanceTo(spike.position) < 1.2) {
+        if (bot.position.distanceTo(spike.position) < 1.8) {
           bot.hasSpike = true;
+          bot.stratLane = null; // the carrier goes straight to the site
           spike.status = 'carried';
           spike.carrier = bot;
           bot.body.group.position.copy(bot.position);
@@ -393,15 +530,49 @@ export function createBots(scene, world, senses, grenades, hooks) {
         }
       }
 
+      // The execute clock: the team waits at spawn, then the entry fragger
+      // throws his utility and the push starts together — no trickling in one
+      // by one. The clock only runs while the round is live.
+      if (canFight && bot.stratDelay > 0) {
+        bot.stratDelay -= dt;
+        bot.state = 'setup';
+        if (bot.stratDelay <= 0 && bot.execUtility && !bot.hasExecuted && bot.site) {
+          bot.hasExecuted = true;
+          const site = SITES[bot.site];
+          const dir = new THREE.Vector3(site.center.x - bot.position.x, 0, site.center.z - bot.position.z).normalize();
+          const from = bot.position.clone();
+          from.y = 1.5;
+          grenadesApi.throwGrenade(bot.execUtility, from, dir, 11);
+          if (bot.execUtility === 'flash' && onCallout) onCallout(CALLOUTS.execute(bot.name, bot.site));
+        }
+        bot.body.group.position.copy(bot.position);
+        bot.body.group.rotation.y = bot.yaw;
+        continue;
+      }
+
       // Walk the waypoint graph toward the objective; hold the post when arrived.
+      // A bot with a strat lane walks the lane first, then the site behind it —
+      // unless the spike is dropped, which overrides everything: the whole team
+      // detours to it, and a bot that reaches its waypoint steers straight at
+      // the spike instead of holding, because the nearest waypoint can still be
+      // metres from where it fell.
       bot.state = 'route';
-      const targetId = objectiveFor(bot, spike);
+      let targetId = bot.stratLane != null ? bot.stratLane : objectiveFor(bot, spike);
+      if (spike.status === 'dropped' && bot.team === 'vanguard') {
+        bot.stratLane = null;
+        targetId = nearestWaypoint(spike.position);
+      }
       const arrived = walkTo(bot, dt, targetId);
-      if (arrived) {
-        bot.state = 'hold';
-        bot.holdTimer += dt;
-        // Scan: sweep the yaw slowly across the lane the post watches.
-        bot.yaw += Math.sin(bot.holdTimer * 0.7) * dt * 0.5;
+      if (arrived && bot.stratLane != null && targetId === bot.stratLane) bot.stratLane = null;
+      if (arrived && bot.stratLane == null) {
+        if (spike.status === 'dropped' && bot.team === 'vanguard' && bot.position.distanceTo(spike.position) < 6) {
+          moveBot(bot, dt, spike.position.x, spike.position.z);
+        } else {
+          bot.state = 'hold';
+          bot.holdTimer += dt;
+          // Scan: sweep the yaw slowly across the lane the post watches.
+          bot.yaw += Math.sin(bot.holdTimer * 0.7) * dt * 0.5;
+        }
       }
       bot.body.group.position.copy(bot.position);
       bot.body.group.rotation.y = bot.yaw;
@@ -425,6 +596,21 @@ export function createBots(scene, world, senses, grenades, hooks) {
 
   return {
     bots, spawnRound, step, damageBot, aliveCounts, reset,
+    get lastBuys() { return lastBuys; },
+    // Re-buy for every bot from its current wallet — used by the buy-phase
+    // capture, which stages a later round's full buy instead of round 1's eco.
+    rebuy() {
+      lastBuys = [];
+      for (const bot of bots) lastBuys.push(buyForBot(bot));
+    },
+    // Round payout, mirroring the player's economy: a win pays $3,250, a loss
+    // pays more the longer the streak runs — the next round's buy tier follows.
+    payRound(winner, lossStreak) {
+      for (const bot of bots) {
+        if (bot.team === winner) bot.wallet += 3250;
+        else bot.wallet += Math.min(2900, 1400 + lossStreak * 500);
+      }
+    },
     setFrozen(value) { frozen = value; },
     blindBotsAt(position, range) {
       for (const bot of bots) {

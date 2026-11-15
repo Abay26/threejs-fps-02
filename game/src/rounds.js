@@ -99,6 +99,7 @@ export function createMatch(deps) {
     state.spike.status = 'planted';
     state.spike.site = site;
     state.spike.position.copy(position);
+    state.spike.carrier = null;
     state.spike.timer = SPIKE_FUSE;
     audio.plant();
     hud.banner('SPIKE PLANTED', `Site ${site} — ${SPIKE_FUSE}s to detonation`, true);

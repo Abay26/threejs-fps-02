@@ -1,7 +1,14 @@
-// Saltline Terminal: a round-based tactical FPS in three.js. Boot and the one loop:
+// Saltline Terminal v3: a round-based tactical FPS in three.js. Boot and the one loop:
 // a fixed 60 Hz simulation feeding a render at the display's rate. ?shot=start|play|
 // buy|end with &seed=N sets up a deterministic frame for a capture, renders it twice,
 // then freezes it and sets window.__shotReady.
+//
+// What v3 adds over v2: the match is played as a plan — every round both teams pick
+// a strat (A split, B rush, mid control, fake A) and the bots execute it together,
+// the entry fragger flashing the site first, with radio callouts on the HUD; every
+// bot buys to its own wallet's tier, so the economy is a team decision; rifles aim
+// down sights on right mouse; every gun's recoil follows a learnable pattern; and
+// a defuse kit in the shop halves the defuse time.
 //
 // The simulation is one state store: the match (rounds, money, spike), the player,
 // the bots, the grenades and the senses all read and write the same objects, and the
@@ -18,11 +25,15 @@ import { createBots } from './bots.js';
 import { createAudio } from './audio.js';
 import { createHud } from './hud.js';
 import { createMatch, BUY_SECONDS, PLANT_SECONDS, DEFUSE_SECONDS, FLASH_PRICE, SMOKE_PRICE } from './rounds.js';
+import { planRound, CALLOUTS } from './strat.js';
 
 const FIXED_STEP = 1 / 60;
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
-const seed = Number.parseInt(params.get('seed') ?? '1', 10) || 1;
+// A capture URL pins the seed (?shot=…&seed=1); a normal game seeds from the
+// clock, so no two matches play the same strat order.
+const seedParam = params.get('seed');
+const seed = seedParam ? (Number.parseInt(seedParam, 10) || 1) : ((Date.now() % 2147483647) || 1);
 
 function mulberry32(initial) {
   let a = initial;
@@ -74,7 +85,9 @@ let channel = 0; // plant/defuse progress, seconds held
 let channelKind = null;
 let buyOpen = false;
 let muted = false;
-const loadout = { flash: 1, smoke: 1, selected: 'flash' };
+let clutchShown = false;
+let currentPlan = null;
+const loadout = { flash: 1, smoke: 1, selected: 'flash', hasKit: false };
 
 const grenades = createGrenades(scene, world, {
   onFlash(position) {
@@ -102,8 +115,9 @@ const grenades = createGrenades(scene, world, {
 
 const match = createMatch({
   hud, audio,
-  onRoundEnd() {
+  onRoundEnd(winner) {
     bots.setFrozen(true);
+    bots.payRound(winner, match.state.lossStreak);
     hud.hideBuy();
     buyOpen = false;
   },
@@ -163,6 +177,9 @@ const bots = createBots(scene, world, senses, grenades, {
   onSpikeDefused() {
     match.defuseSpike();
   },
+  onCallout(text) {
+    hud.comms(text);
+  },
 });
 
 const raycaster = new THREE.Raycaster();
@@ -219,7 +236,10 @@ function shoot() {
   if (anyHit) hud.hitMarker(anyKill);
   audio.shot(weapon.state.id);
   senses.emitNoise(camera.position, def.id === 'mastiff' ? 55 : 32);
-  player.recoil(0.011 + random() * 0.005, (random() * 2 - 1) * 0.005);
+  // Recoil follows the gun's pattern table, with a whisper of randomness on the
+  // yaw so no two bursts land pixel-identical.
+  const [kickPitch, kickYaw] = weapon.patternKick();
+  player.recoil(kickPitch, kickYaw + (random() * 2 - 1) * 0.002);
   hud.setAmmo(weapon.state.mag, weapon.state.reserve, def.name);
 }
 
@@ -241,6 +261,12 @@ function checkRoundEnd() {
   const vAlive = counts.vanguard + (playerView.alive ? 1 : 0);
   const sAlive = counts.sentinel;
   if (match.state.phase !== 'live') return;
+  // Clutch: the player is the last Vanguard standing against two or more.
+  if (playerView.alive && vAlive === 1 && sAlive >= 2 && !clutchShown) {
+    clutchShown = true;
+    hud.banner('CLUTCH', `1v${sAlive} — last one standing, make it count`, true);
+    hud.comms(CALLOUTS.clutch('You', 1, sAlive));
+  }
   if (match.state.spike.status === 'planted') return; // spike decides it now
   if (sAlive === 0) match.endRound('vanguard', 'elimination');
   else if (vAlive === 0) match.endRound('sentinel', 'elimination');
@@ -249,6 +275,7 @@ function checkRoundEnd() {
 function resetRoundPositions() {
   playerDead = false;
   playerView.alive = true;
+  clutchShown = false;
   player.reset(SPAWNS.vanguard[0], 0);
   weapon.refill();
   loadout.flash = 1;
@@ -256,7 +283,12 @@ function resetRoundPositions() {
   loadout.selected = 'flash';
   hud.setGrenades(1, 1, 'flash');
   bots.setFrozen(false);
-  bots.spawnRound(random);
+  // The round plan: both teams pick a strat, the bots buy to their wallets,
+  // and the HUD shows the attack strat and the team's buy.
+  currentPlan = planRound(match.state.round, match.state.scoreV, match.state.scoreS, random);
+  bots.spawnRound(random, currentPlan);
+  hud.setStrat(currentPlan.vanguard.name);
+  hud.comms(`STRAT: ${currentPlan.vanguard.name} — ${currentPlan.vanguard.call}`);
   for (const bot of bots.bots) {
     bot.smokedSite = false;
     bot.investigate = null;
@@ -274,10 +306,19 @@ function resetRoundPositions() {
 function updateAliveHud() {
   const counts = bots.aliveCounts();
   hud.setAlive(counts.vanguard + (playerView.alive ? 1 : 0), counts.sentinel);
+  // Enemies show on the minimap only while the player can actually see them.
+  const visible = new Set();
+  if (!playerDead) {
+    for (const bot of bots.bots) {
+      if (!bot.alive || bot.team !== 'sentinel') continue;
+      tempVec.set(bot.position.x, 1.35, bot.position.z);
+      if (senses.hasLOS(camera.position, tempVec, grenades.clouds)) visible.add(bot);
+    }
+  }
   hud.drawMinimap(
     world.colliders, body, bots.bots,
     match.state.spike.status === 'planted' || match.state.spike.status === 'dropped' ? match.state.spike.position : null,
-    grenades.clouds,
+    grenades.clouds, visible,
   );
 }
 
@@ -323,7 +364,18 @@ function openBuy() {
       }
     },
   });
-  hud.showBuy(match.state.money, items, new Set([weapon.state.id]));
+  items.push({
+    id: 'kit', key: '9', name: 'Defuse Kit', price: 400,
+    desc: 'Halves the defuse time — 2.5s instead of 5s. Lasts the match.',
+    buy: () => {
+      if (!loadout.hasKit && match.buy('kit', 400)) {
+        loadout.hasKit = true;
+        openBuy();
+      }
+    },
+  });
+  hud.showBuy(match.state.money, items, new Set([weapon.state.id, ...(loadout.hasKit ? ['kit'] : [])]),
+    `TEAM BUY — ${bots.lastBuys.join(' · ')}`);
 }
 
 function buyWeapon(id) {
@@ -365,6 +417,10 @@ function handleKeys() {
       hud.setGrenades(loadout.flash, loadout.smoke, loadout.selected);
       openBuy();
     }
+    if (pressed('Digit9') && !loadout.hasKit && match.buy('kit', 400)) {
+      loadout.hasKit = true;
+      openBuy();
+    }
   }
   if (pressed('KeyQ')) {
     loadout.selected = loadout.selected === 'flash' ? 'smoke' : 'flash';
@@ -387,6 +443,7 @@ function handleKeys() {
 
 function plantDefuseStep(dt) {
   const spike = match.state.spike;
+  const defuseSeconds = loadout.hasKit ? DEFUSE_SECONDS / 2 : DEFUSE_SECONDS;
   const inSite = (site) => body.position.distanceTo(tempVec.set(site.center.x, 0, site.center.z)) < site.radius;
   let kind = null;
   let progress = 0;
@@ -404,16 +461,17 @@ function plantDefuseStep(dt) {
     } else if (spike.status === 'planted' && body.position.distanceTo(spike.position) < 2) {
       kind = 'defuse';
       channel += dt;
-      progress = channel / DEFUSE_SECONDS;
-      if (channel >= DEFUSE_SECONDS) {
+      progress = channel / defuseSeconds;
+      if (channel >= defuseSeconds) {
         channel = 0;
+        if (loadout.hasKit) loadout.hasKit = false; // the kit is spent on the defuse
         match.defuseSpike();
       }
     }
   }
   if (kind === null) channel = 0;
   if (kind !== channelKind) channelKind = kind;
-  hud.setPlant(kind === 'plant' ? 'PLANTING SPIKE — hold E' : kind === 'defuse' ? 'DEFUSING — hold E' : null, progress);
+  hud.setPlant(kind === 'plant' ? 'PLANTING SPIKE — hold E' : kind === 'defuse' ? `DEFUSING — hold E${loadout.hasKit ? ' · kit' : ''}` : null, progress);
 }
 
 function onLockChange(locked) {
@@ -478,9 +536,14 @@ function frame(now) {
   if (!frozen) {
     const look = input.takeLook();
     player.look(look.x, look.y);
+    // Right mouse: the Mastiff scopes; a Falcon or Jackal aims down sights.
+    // Scoped is the narrow sniper zoom, aiming is the smaller rifle ADS.
+    const aiming = input.state.scoped && weapon.def().ads === true && !playerDead && match.state.phase === 'live';
     const scoped = input.state.scoped && weapon.def().scoped === true && !playerDead && match.state.phase === 'live';
     body.scoped = scoped;
-    targetFov = scoped ? 28 : 74;
+    body.aiming = aiming;
+    weapon.setAds(aiming);
+    targetFov = scoped ? 28 : aiming ? 60 : 74;
     if (Math.abs(camera.fov - targetFov) > 0.1) {
       camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 14);
       camera.updateProjectionMatrix();
@@ -538,6 +601,7 @@ function runShot(name) {
   hud.hideOverlay();
   hud.hideBuy();
   hud.hideBanner();
+  hud.clearComms();
   match.startMatch();
   hud.hideBanner();
   resetRoundPositions();
@@ -553,6 +617,10 @@ function runShot(name) {
     body.position.set(-2, 0, 21);
     aimAt(new THREE.Vector3(-6, 1.4, 4));
     settle(10);
+    // Stage a later round's full buy, not round 1's pistol eco: the bots'
+    // wallets are topped up and they re-buy to their tiers.
+    for (const bot of bots.bots) bot.wallet = 4500;
+    bots.rebuy();
     match.state.money = 4150;
     hud.setMoney(4150);
     openBuy();
@@ -564,40 +632,59 @@ function runShot(name) {
     hud.setScore(2, 1);
     hud.setTimer(84);
     weapon.equip('falcon');
-    // A smoke cloud blooming down Crane Row, right behind the target, then a
-    // firefight in the open.
-    camera.getWorldDirection(aimDir);
-    grenades.throwGrenade('smoke', new THREE.Vector3(4, 1.5, 6), new THREE.Vector3(0.45, 0.1, -0.88).normalize(), 8);
+    // The execute, mid-firefight, down the West Flank: the team is pushing on
+    // the round's strat call, a smoke cloud blooms on the far side of the lane
+    // (in frame, clear of the shot line), a Sentinel stands in the open down
+    // the lane, a second holds the right angle, and a Vanguard teammate is
+    // visible on the left. The player fires until the target drops — the
+    // killfeed entry that follows is the real kill, not a staged line.
+    hud.comms(CALLOUTS.execute('Rook', currentPlan.vanguard.assignments[0].site));
+    grenades.throwGrenade('smoke', new THREE.Vector3(-20, 1.5, 4), new THREE.Vector3(-0.79, 0.15, -0.61).normalize(), 11);
     settle(90);
-    body.position.set(6, 0, 8);
+    body.position.set(-20, 0, 4);
     const target = bots.bots.find((b) => b.team === 'sentinel' && b.alive);
     if (target) {
-      target.position.set(6.5, 0, -3.5);
+      target.position.set(-24, 0, -4);
       target.body.group.position.copy(target.position);
-      target.body.group.rotation.y = Math.PI;
+      target.body.group.rotation.y = Math.PI * 0.8;
       const second = bots.bots.find((b) => b.team === 'sentinel' && b.alive && b !== target);
       if (second) {
-        second.position.set(13, 0, -5);
+        second.position.set(-16, 0, -8);
         second.body.group.position.copy(second.position);
-        second.body.group.rotation.y = Math.PI / 2;
+        second.body.group.rotation.y = Math.PI * 0.6;
       }
-      aimAt(new THREE.Vector3(6.5, 1.35, -3.5));
-      settle(6);
-      shoot();
-      settle(2);
+      const mate = bots.bots.find((b) => b.team === 'vanguard' && b.alive);
+      if (mate) {
+        mate.position.set(-23, 0, 0);
+        mate.body.group.position.copy(mate.position);
+        mate.body.group.rotation.y = Math.PI * 0.9;
+      }
+      for (let i = 0; i < 4 && target.alive; i += 1) {
+        aimAt(new THREE.Vector3(-24, 1.7, -4));
+        shoot();
+        settle(2);
+      }
     }
-    hud.killfeed('Rook', 'Warden', false);
-    hud.killfeed('You', 'Kite', true);
     updateAliveHud();
   } else if (name === 'end') {
     match.state.phase = 'ended';
     match.state.scoreV = 3;
     match.state.scoreS = 2;
+    match.state.timeLeft = 2.5;
     hud.setScore(3, 2);
+    hud.setTimer(2.5);
     match.plantSpike('A', new THREE.Vector3(-28, 0, -14));
     match.state.spike.timer = 12.4;
     hud.setSpike(12.4);
+    hud.comms('Rook: spike down on A, hold the post-plant');
     body.position.set(-14, 0, -4);
+    const mate = bots.bots.find((b) => b.team === 'vanguard' && b.alive);
+    if (mate) {
+      mate.position.set(-18, 0, -8);
+      mate.body.group.position.copy(mate.position);
+      // Facing back toward the player, so the amber visor reads in frame.
+      mate.body.group.rotation.y = Math.PI * 0.85;
+    }
     aimAt(new THREE.Vector3(-28, 1.2, -14));
     settle(10);
     hud.banner('ROUND WON', 'Round 5 · Spike detonated at Site A', true);
@@ -610,12 +697,27 @@ function runShot(name) {
 
 // A small read-only handle for automated play-tests (and for players who want to
 // script the game): the match phase, the bots and the player's own state.
+// fastForward runs the fixed-step simulation ahead without rendering, so a
+// play-test can watch whole rounds in seconds instead of minutes.
 window.__saltline = {
   get phase() { return match.state.phase; },
   get round() { return match.state.round; },
   get score() { return [match.state.scoreV, match.state.scoreS]; },
   get money() { return match.state.money; },
-  get spike() { return match.state.spike.status; },
+  get spike() { return `${match.state.spike.status}:${match.state.spike.carrier === 'player' ? 'player' : match.state.spike.carrier?.name ?? '-'}`; },
+  get plan() { return currentPlan ? currentPlan.vanguard.name : null; },
+  fastForward(seconds) {
+    const steps = Math.round(seconds / FIXED_STEP);
+    for (let i = 0; i < steps; i += 1) step(FIXED_STEP);
+    return { phase: match.state.phase, round: match.state.round, score: [match.state.scoreV, match.state.scoreS] };
+  },
+  // Move the player, for play-tests that need the human out of the way (or in
+  // harm's way) while the bots play the objective.
+  teleport(x, z) {
+    body.position.set(x, 0, z);
+    body.velocity.set(0, 0, 0);
+    syncCamera();
+  },
   get grenades() { return { flash: loadout.flash, smoke: loadout.smoke, selected: loadout.selected }; },
   get player() {
     return {
@@ -628,6 +730,10 @@ window.__saltline = {
     return bots.bots.map((b) => ({
       name: b.name, team: b.team, role: b.role, state: b.state, alive: b.alive, hp: Math.ceil(b.health),
       x: +b.position.x.toFixed(1), z: +b.position.z.toFixed(1),
+      // Debug fields for play-tests: the waypoint path the bot is walking.
+      path: b.path, pathIndex: b.pathIndex, slot: { x: +b.slot.x.toFixed(1), z: +b.slot.z.toFixed(1) },
+      speed: +b.speed.toFixed(2), stratLane: b.stratLane,
+      investigate: b.investigate ? [+b.investigate.x.toFixed(1), +b.investigate.z.toFixed(1)] : null,
     }));
   },
 };

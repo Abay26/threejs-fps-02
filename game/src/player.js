@@ -33,6 +33,7 @@ export function createPlayer(colliders, spawn) {
     health: 100,
     armor: 0,
     scoped: false,
+    aiming: false, // right mouse on an ADS gun: slower, steadier, tighter spread
     airborne: false,
   };
   let recoilPitch = 0;
@@ -58,8 +59,8 @@ export function createPlayer(colliders, spawn) {
   }
 
   function step(dt, keys) {
-    const sprinting = keys.has('ShiftLeft') && !state.crouched && !state.scoped;
-    const speed = state.crouched ? 2.4 : sprinting ? 6.6 : 4.6;
+    const sprinting = keys.has('ShiftLeft') && !state.crouched && !state.scoped && !state.aiming;
+    const speed = state.crouched ? 2.4 : state.aiming ? 3.1 : sprinting ? 6.6 : 4.6;
     forward.set(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
     right.set(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
     wish.set(0, 0, 0);
@@ -108,7 +109,7 @@ export function createPlayer(colliders, spawn) {
   }
 
   function look(dx, dy) {
-    const sens = state.scoped ? 0.00075 : 0.0021;
+    const sens = state.scoped ? 0.00075 : state.aiming ? 0.0011 : 0.0021;
     state.yaw -= dx * sens;
     state.pitch -= dy * sens;
     state.pitch = Math.max(-1.5, Math.min(1.5, state.pitch));
@@ -146,6 +147,7 @@ export function createPlayer(colliders, spawn) {
     state.health = 100;
     state.eye = EYE_STAND;
     state.scoped = false;
+    state.aiming = false;
     recoilPitch = 0;
     recoilYaw = 0;
   }
