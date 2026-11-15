@@ -1,23 +1,25 @@
-// The look plan, in one place. Meridian Yard is a sun-baked industrial yard at dusk:
-// warm concrete, rusted containers, amber Vanguard vs teal Sentinel. Every colour the
-// game uses is one of these names; the same names are the CSS custom properties in
-// index.html, so the 3D scene and the HUD share one palette.
+// Saltline Terminal: the palette of a working container port at night. Cold blue
+// moonlight over dark asphalt, warm sodium lamps, rust-red and teal containers, and
+// amber for Vanguard, teal for Sentinel. One palette, one source of truth, so the
+// map, the HUD and the bots all read the same night.
 export const PALETTE = {
-  canvas: '#191512', // dusk sky / fog
-  ground: '#3a352e', // yard concrete
-  concrete: '#6b655a', // walls, light concrete
-  concreteDark: '#4a453d', // dark concrete
-  rust: '#8a4b2a', // rusted container A
-  ochre: '#b07f2e', // container B
-  teal: '#2e7f7a', // container C + Sentinel team
-  steel: '#7d838a', // metal, crane, barrels
-  amber: '#f0a830', // Vanguard team + accent
-  ink: '#efe9dc', // HUD text, bright surfaces
-  muted: '#a49c8c', // dim HUD text
-  hazard: '#d8b13a', // hazard stripes
-  spike: '#e2483d', // the spike device
+  canvas: '#0a0e16', // night sky and fog
+  fog: '#0c111c',
+  moon: '#9db8d9',
+  sodium: '#ffb35c',
+  sodiumDeep: '#ff8f2a',
+  ground: '#232830',
+  concrete: '#3a4048',
+  concreteDark: '#2b3038',
+  rust: '#8a4a30',
+  ochre: '#a87c2e',
+  teal: '#1f6f6a',
+  navy: '#27435e',
+  steel: '#6b7683',
+  amber: '#f0a830', // Vanguard
+  sentinel: '#2e9f96', // Sentinel
+  spike: '#e2483d',
+  ink: '#e8ecf2',
+  muted: '#9aa3b0',
+  water: '#0d2233',
 };
-
-export function hex(name) {
-  return PALETTE[name];
-}

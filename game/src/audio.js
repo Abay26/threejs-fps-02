@@ -1,6 +1,8 @@
 // All sound is synthesised with WebAudio at boot: no audio files, no network. Gunfire
 // is filtered noise, beeps are short oscillators, and the round stingers are two-note
-// phrases. Everything is quiet until the player first interacts with the page.
+// phrases. New in Saltline: the flashbang's high ring, the smoke's soft pop, and a
+// low foghorn that opens every live round across the harbour. Everything is quiet
+// until the player first interacts with the page.
 export function createAudio() {
   let ctx = null;
   let master = null;
@@ -60,6 +62,7 @@ export function createAudio() {
     shot(kind) {
       if (kind === 'mastiff') noise(0.28, 900, 0.9);
       else if (kind === 'jackal') noise(0.09, 1600, 0.45);
+      else if (kind === 'boar') noise(0.3, 700, 0.9);
       else noise(0.13, 1200, 0.6);
       tone(140, 0.08, 0.25, 'square');
     },
@@ -79,5 +82,21 @@ export function createAudio() {
     roundWin() { tone(523, 0.16, 0.35); tone(659, 0.16, 0.35, 'sine', 0.14); tone(784, 0.3, 0.4, 'sine', 0.28); },
     roundLose() { tone(392, 0.2, 0.3); tone(311, 0.35, 0.3, 'sine', 0.18); },
     dryFire() { tone(300, 0.03, 0.2, 'square'); },
+    // A flashbang: a sharp crack, then a high ringing that fades over two seconds.
+    flash() {
+      noise(0.12, 3000, 0.9, 'highpass');
+      tone(2800, 1.8, 0.12, 'sine');
+      tone(2100, 1.4, 0.08, 'sine', 0.1);
+    },
+    // A smoke grenade: a soft pop and a low hiss as the canister vents.
+    smoke() {
+      noise(0.25, 500, 0.4);
+      noise(1.2, 300, 0.15, 'bandpass');
+    },
+    // The harbour foghorn that opens a live round.
+    horn() {
+      tone(98, 1.1, 0.3, 'sine');
+      tone(147, 1.1, 0.18, 'sine');
+    },
   };
 }

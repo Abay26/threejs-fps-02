@@ -1,17 +1,23 @@
-// Meridian Yard: a round-based tactical FPS in three.js. Boot and the one loop: a fixed
-// 60 Hz simulation feeding a render at the display's rate. ?shot=start|play|buy|end with
-// &seed=N sets up a deterministic frame for a capture, renders it twice, then freezes it
-// and sets window.__shotReady.
+// Saltline Terminal: a round-based tactical FPS in three.js. Boot and the one loop:
+// a fixed 60 Hz simulation feeding a render at the display's rate. ?shot=start|play|
+// buy|end with &seed=N sets up a deterministic frame for a capture, renders it twice,
+// then freezes it and sets window.__shotReady.
+//
+// The simulation is one state store: the match (rounds, money, spike), the player,
+// the bots, the grenades and the senses all read and write the same objects, and the
+// hot loops reuse module-level scratch vectors instead of allocating every frame.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { createWorld, SITES, SPAWNS } from './world.js';
+import { createSenses } from './senses.js';
+import { createGrenades } from './grenades.js';
 import { createInput } from './input.js';
 import { createPlayer } from './player.js';
 import { createWeapon, WEAPONS } from './weapon.js';
 import { createBots } from './bots.js';
 import { createAudio } from './audio.js';
 import { createHud } from './hud.js';
-import { createMatch, BUY_SECONDS, PLANT_SECONDS, DEFUSE_SECONDS } from './rounds.js';
+import { createMatch, BUY_SECONDS, PLANT_SECONDS, DEFUSE_SECONDS, FLASH_PRICE, SMOKE_PRICE } from './rounds.js';
 
 const FIXED_STEP = 1 / 60;
 const params = new URLSearchParams(window.location.search);
@@ -41,24 +47,58 @@ document.getElementById('game').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(PALETTE.canvas);
-scene.fog = new THREE.Fog(new THREE.Color(PALETTE.canvas), 40, 110);
-const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.05, 200);
+scene.fog = new THREE.Fog(new THREE.Color(PALETTE.canvas), 45, 130);
+const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.05, 220);
 scene.add(camera);
+
+// Scratch vectors: the hot loops (shooting, sight, movement) reuse these and never
+// allocate a vector per frame.
+const aimDir = new THREE.Vector3();
+const muzzlePos = new THREE.Vector3();
+const endPos = new THREE.Vector3();
+const tempVec = new THREE.Vector3();
+const tempVec2 = new THREE.Vector3();
 
 const audio = createAudio();
 const hud = createHud();
 const world = createWorld(scene);
+const senses = createSenses(world);
 const player = createPlayer(world.colliders, SPAWNS.vanguard[0]);
 const weapon = createWeapon(camera, audio);
 const input = createInput(renderer.domElement, onLockChange);
 
 const body = player.state;
-const playerView = { position: body.position, alive: true, moving: false };
+const playerView = { position: body.position, alive: true, moving: false, crouched: false };
 let playerDead = false;
 let channel = 0; // plant/defuse progress, seconds held
 let channelKind = null;
 let buyOpen = false;
 let muted = false;
+const loadout = { flash: 1, smoke: 1, selected: 'flash' };
+
+const grenades = createGrenades(scene, world, {
+  onFlash(position) {
+    audio.flash();
+    // Bots that can see the burst are blinded; the player is flashed if they
+    // are looking at it with a line of sight.
+    bots.blindBotsAt(position, 26);
+    if (!playerDead) {
+      tempVec.copy(position).sub(camera.position);
+      const dist = tempVec.length();
+      if (dist < 30) {
+        camera.getWorldDirection(tempVec2);
+        const facing = tempVec2.dot(tempVec.normalize());
+        if (facing > 0.35 && senses.hasLOS(camera.position, position, [])) {
+          hud.flashBang(Math.max(0.35, 1 - dist / 30) * (0.5 + facing * 0.5));
+        }
+      }
+    }
+  },
+  onSmoke(position) {
+    audio.smoke();
+    senses.emitNoise(position, 12);
+  },
+});
 
 const match = createMatch({
   hud, audio,
@@ -75,14 +115,14 @@ const match = createMatch({
     hud.showOverlay('match', {
       title: won ? 'MATCH WON' : 'MATCH LOST',
       copy: won
-        ? `Vanguard takes Meridian Yard ${match.state.scoreV}–${match.state.scoreS}. The yard is yours.`
-        : `Sentinel holds Meridian Yard ${match.state.scoreS}–${match.state.scoreV}. Run it back.`,
+        ? `Vanguard takes Saltline Terminal ${match.state.scoreV}–${match.state.scoreS}. The port is yours.`
+        : `Sentinel holds Saltline Terminal ${match.state.scoreS}–${match.state.scoreV}. Run it back.`,
     });
   },
   onSpikePlanted() { /* banner already shown by the match */ },
 });
 
-const bots = createBots(scene, world, {
+const bots = createBots(scene, world, senses, grenades, {
   audio,
   fireTracer: (from, to, colour) => weapon.fireVisual(from, to, colour),
   onKill(killer, victim, headshot) {
@@ -92,11 +132,22 @@ const bots = createBots(scene, world, {
       audio.kill();
     }
   },
-  onPlayerDamaged(amount) {
+  onPlayerDamaged(amount, fromPos) {
     if (playerDead) return;
     player.damage(amount);
     hud.setHealth(body.health, body.armor);
     hud.damageFlash();
+    // Damage direction: the bearing from the camera forward to the shooter.
+    // cross = forward.x * tz - forward.z * tx, dot = forward . t; a positive
+    // bearing is to the player's right, matching the CSS clockwise rotation.
+    if (fromPos) {
+      tempVec.copy(fromPos).sub(body.position);
+      const fx = -Math.sin(body.yaw);
+      const fz = -Math.cos(body.yaw);
+      const cross = fx * tempVec.z - fz * tempVec.x;
+      const dot = fx * tempVec.x + fz * tempVec.z;
+      hud.damageDirection((Math.atan2(cross, dot) * 180) / Math.PI);
+    }
     if (body.health <= 0) {
       playerDead = true;
       playerView.alive = false;
@@ -107,6 +158,7 @@ const bots = createBots(scene, world, {
   },
   onSpikePlanted(site, position) {
     match.plantSpike(site, position);
+    match.addPlantReward();
   },
   onSpikeDefused() {
     match.defuseSpike();
@@ -114,8 +166,7 @@ const bots = createBots(scene, world, {
 });
 
 const raycaster = new THREE.Raycaster();
-raycaster.far = 120;
-const aimDirection = new THREE.Vector3();
+raycaster.far = 130;
 
 function botHitMeshes() {
   const meshes = [];
@@ -128,36 +179,61 @@ function botHitMeshes() {
   return meshes;
 }
 
-function shoot(spread) {
+function shoot() {
   const def = weapon.def();
   if (!weapon.takeRound()) {
     audio.dryFire();
     weapon.reload();
     return;
   }
-  camera.getWorldDirection(aimDirection);
-  aimDirection.x += (random() * 2 - 1) * spread;
-  aimDirection.y += (random() * 2 - 1) * spread;
-  aimDirection.z += (random() * 2 - 1) * spread;
-  aimDirection.normalize();
-  scene.updateMatrixWorld(true);
-  raycaster.set(camera.position, aimDirection);
-  const hits = raycaster.intersectObjects(world.shootables.concat(botHitMeshes()), false);
-  const hit = hits[0];
-  const end = hit ? hit.point.clone() : camera.position.clone().addScaledVector(aimDirection, def.range);
-  weapon.fireVisual(camera.position.clone().addScaledVector(aimDirection, 0.6), end, def.tracer);
-  audio.shot(weapon.state.id);
-  if (hit && hit.object.userData.botRef) {
-    const bot = hit.object.userData.botRef;
-    const headshot = hit.object.userData.isHead === true;
-    const damage = headshot ? def.headDamage : def.damage;
-    hud.hitMarker(false);
-    bots.damageBot(bot, damage, { name: 'You' }, headshot);
-  } else if (hit) {
-    hud.hitMarker(false);
+  camera.getWorldDirection(aimDir);
+  const spread = weapon.spread(player.groundSpeed(), body.crouched, body.airborne);
+  const pellets = def.pellets;
+  let anyHit = false;
+  let anyKill = false;
+  for (let p = 0; p < pellets; p += 1) {
+    tempVec.copy(aimDir);
+    tempVec.x += (random() * 2 - 1) * spread;
+    tempVec.y += (random() * 2 - 1) * spread;
+    tempVec.z += (random() * 2 - 1) * spread;
+    tempVec.normalize();
+    scene.updateMatrixWorld(true);
+    raycaster.set(camera.position, tempVec);
+    const hits = raycaster.intersectObjects(world.shootables.concat(botHitMeshes()), false);
+    const hit = hits[0];
+    endPos.copy(hit ? hit.point : camera.position).addScaledVector(tempVec, hit ? 0 : def.range);
+    if (hit) endPos.copy(hit.point);
+    muzzlePos.copy(camera.position).addScaledVector(tempVec, 0.6);
+    weapon.fireVisual(muzzlePos, endPos, def.tracer);
+    if (hit && hit.object.userData.botRef) {
+      const bot = hit.object.userData.botRef;
+      const headshot = hit.object.userData.isHead === true;
+      const dist = camera.position.distanceTo(hit.point);
+      const damage = weapon.damageAt(dist, headshot);
+      anyHit = true;
+      const wasAlive = bot.alive;
+      bots.damageBot(bot, damage, { name: 'You' }, headshot);
+      if (wasAlive && !bot.alive) anyKill = true;
+    }
   }
+  if (anyHit) hud.hitMarker(anyKill);
+  audio.shot(weapon.state.id);
+  senses.emitNoise(camera.position, def.id === 'mastiff' ? 55 : 32);
   player.recoil(0.011 + random() * 0.005, (random() * 2 - 1) * 0.005);
   hud.setAmmo(weapon.state.mag, weapon.state.reserve, def.name);
+}
+
+function throwGrenade() {
+  if (match.state.phase !== 'live' || playerDead) return;
+  const kind = loadout.selected;
+  if (loadout[kind] <= 0) return;
+  camera.getWorldDirection(aimDir);
+  muzzlePos.copy(camera.position).addScaledVector(aimDir, 0.5);
+  if (grenades.throwGrenade(kind, muzzlePos, aimDir, 11)) {
+    loadout[kind] -= 1;
+    hud.setGrenades(loadout.flash, loadout.smoke, loadout.selected);
+    senses.emitNoise(camera.position, 18);
+  }
 }
 
 function checkRoundEnd() {
@@ -173,45 +249,76 @@ function checkRoundEnd() {
 function resetRoundPositions() {
   playerDead = false;
   playerView.alive = true;
-  // Spawn facing north (yaw 0), down the yard toward Mid and the sites.
   player.reset(SPAWNS.vanguard[0], 0);
   weapon.refill();
+  loadout.flash = 1;
+  loadout.smoke = 1;
+  loadout.selected = 'flash';
+  hud.setGrenades(1, 1, 'flash');
   bots.setFrozen(false);
   bots.spawnRound(random);
-  // Attach each bot's meshes back to its bot record for hit detection.
   for (const bot of bots.bots) {
+    bot.smokedSite = false;
+    bot.investigate = null;
+    bot.blinded = 0;
     bot.body.group.traverse((mesh) => { mesh.userData.botRef = bot; });
   }
   hud.setHealth(100, body.armor);
   hud.setAmmo(weapon.state.mag, weapon.state.reserve, weapon.def().name);
   hud.setPlant(null);
   hud.setSpike(null);
+  hud.setScope(false);
   updateAliveHud();
 }
 
 function updateAliveHud() {
   const counts = bots.aliveCounts();
   hud.setAlive(counts.vanguard + (playerView.alive ? 1 : 0), counts.sentinel);
-  hud.drawMinimap(world.colliders, body, bots.bots, match.state.spike.status === 'planted' || match.state.spike.status === 'dropped' ? match.state.spike.position : null);
+  hud.drawMinimap(
+    world.colliders, body, bots.bots,
+    match.state.spike.status === 'planted' || match.state.spike.status === 'dropped' ? match.state.spike.position : null,
+    grenades.clouds,
+  );
 }
 
 function openBuy() {
   if (match.state.phase !== 'buy') return;
   buyOpen = true;
-  // Free the mouse so the shop's rows are clickable; number keys work either way.
   if (document.pointerLockElement) document.exitPointerLock();
   const items = Object.entries(WEAPONS).map(([id, w], i) => ({
     id, key: String(i + 1), name: `${w.name} · ${w.kind}`, price: w.price,
-    desc: `${w.damage} dmg · ${w.mag} rounds · ${w.rate * 1000 | 0}ms`,
+    desc: `${w.damage} dmg · ${w.mag} rounds · ${Math.round(w.rate * 1000)}ms · ${w.pellets > 1 ? w.pellets + ' pellets' : 'bloom ' + w.bloomMax}`,
     buy: () => buyWeapon(id),
   }));
   items.push({
-    id: 'armor', key: '5', name: 'Kevlar Vest', price: 650,
+    id: 'armor', key: '6', name: 'Kevlar Vest', price: 650,
     desc: 'Soaks 60% of damage until depleted',
     buy: () => {
-      if (match.buyArmor(650)) {
+      if (match.buy('armor', 650)) {
         body.armor = 100;
         hud.setHealth(body.health, body.armor);
+        openBuy();
+      }
+    },
+  });
+  items.push({
+    id: 'flash', key: '7', name: 'Flashbang', price: FLASH_PRICE,
+    desc: 'Blinds anyone looking at the burst — bots included',
+    buy: () => {
+      if (match.buy('flash', FLASH_PRICE)) {
+        loadout.flash += 1;
+        hud.setGrenades(loadout.flash, loadout.smoke, loadout.selected);
+        openBuy();
+      }
+    },
+  });
+  items.push({
+    id: 'smoke', key: '8', name: 'Smoke Grenade', price: SMOKE_PRICE,
+    desc: 'A 14s cloud that cuts every sightline through it',
+    buy: () => {
+      if (match.buy('smoke', SMOKE_PRICE)) {
+        loadout.smoke += 1;
+        hud.setGrenades(loadout.flash, loadout.smoke, loadout.selected);
         openBuy();
       }
     },
@@ -221,7 +328,7 @@ function openBuy() {
 
 function buyWeapon(id) {
   const w = WEAPONS[id];
-  if (!match.buyWeapon(id, w.price)) return;
+  if (!match.buy(id, w.price)) return;
   weapon.equip(id);
   hud.setAmmo(weapon.state.mag, weapon.state.reserve, w.name);
   openBuy();
@@ -243,12 +350,35 @@ function handleKeys() {
     ids.forEach((id, i) => {
       if (pressed(`Digit${i + 1}`)) buyWeapon(id);
     });
-    if (pressed('Digit5') && match.buyArmor(650)) {
+    if (pressed('Digit6') && match.buy('armor', 650)) {
       body.armor = 100;
       hud.setHealth(body.health, body.armor);
       openBuy();
     }
+    if (pressed('Digit7') && match.buy('flash', FLASH_PRICE)) {
+      loadout.flash += 1;
+      hud.setGrenades(loadout.flash, loadout.smoke, loadout.selected);
+      openBuy();
+    }
+    if (pressed('Digit8') && match.buy('smoke', SMOKE_PRICE)) {
+      loadout.smoke += 1;
+      hud.setGrenades(loadout.flash, loadout.smoke, loadout.selected);
+      openBuy();
+    }
   }
+  if (pressed('KeyQ')) {
+    loadout.selected = loadout.selected === 'flash' ? 'smoke' : 'flash';
+    hud.setGrenades(loadout.flash, loadout.smoke, loadout.selected);
+  }
+  if (pressed('Digit6') && !buyOpen) {
+    loadout.selected = 'flash';
+    hud.setGrenades(loadout.flash, loadout.smoke, loadout.selected);
+  }
+  if (pressed('Digit7') && !buyOpen) {
+    loadout.selected = 'smoke';
+    hud.setGrenades(loadout.flash, loadout.smoke, loadout.selected);
+  }
+  if (pressed('KeyG')) throwGrenade();
   if (pressed('KeyM')) {
     muted = !muted;
     audio.setEnabled(!muted);
@@ -257,7 +387,7 @@ function handleKeys() {
 
 function plantDefuseStep(dt) {
   const spike = match.state.spike;
-  const inSite = (site) => body.position.distanceTo(new THREE.Vector3(site.center.x, 0, site.center.z)) < site.radius;
+  const inSite = (site) => body.position.distanceTo(tempVec.set(site.center.x, 0, site.center.z)) < site.radius;
   let kind = null;
   let progress = 0;
   if (match.state.phase === 'live' && !playerDead && input.state.keys.has('KeyE')) {
@@ -269,6 +399,7 @@ function plantDefuseStep(dt) {
         const site = inSite(SITES.A) ? 'A' : 'B';
         channel = 0;
         match.plantSpike(site, body.position.clone());
+        match.addPlantReward();
       }
     } else if (spike.status === 'planted' && body.position.distanceTo(spike.position) < 2) {
       kind = 'defuse';
@@ -312,14 +443,18 @@ let accumulator = 0;
 let lastTime = performance.now();
 let frozen = false;
 let minimapTimer = 0;
+let targetFov = 74;
 
 function step(dt) {
   elapsed += dt;
   handleKeys();
   if (!playerDead) player.step(dt, input.state.keys);
   playerView.moving = player.groundSpeed() > 0.5;
+  playerView.crouched = body.crouched;
   weapon.step(dt, player.groundSpeed());
-  bots.step(dt, playerView, match.state.spike, match.state.phase === 'live');
+  senses.step(dt);
+  grenades.step(dt);
+  bots.step(dt, playerView, match.state.spike, grenades, match.state.phase === 'live');
   match.step(dt);
   plantDefuseStep(dt);
   checkRoundEnd();
@@ -328,7 +463,7 @@ function step(dt) {
     minimapTimer = 0.25;
     updateAliveHud();
   }
-  hud.setCrosshairSpread(4 + player.groundSpeed() * 1.2 + weapon.state.kick * 10);
+  hud.setCrosshairSpread(4 + player.groundSpeed() * 1.2 + weapon.state.kick * 10 + weapon.state.bloom * 400);
 }
 
 function syncCamera() {
@@ -343,8 +478,16 @@ function frame(now) {
   if (!frozen) {
     const look = input.takeLook();
     player.look(look.x, look.y);
+    const scoped = input.state.scoped && weapon.def().scoped === true && !playerDead && match.state.phase === 'live';
+    body.scoped = scoped;
+    targetFov = scoped ? 28 : 74;
+    if (Math.abs(camera.fov - targetFov) > 0.1) {
+      camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 14);
+      camera.updateProjectionMatrix();
+    }
+    hud.setScope(scoped);
     if (input.state.firing && weapon.ready() && !playerDead && match.state.phase === 'live') {
-      shoot(weapon.spread(player.groundSpeed()));
+      shoot();
     }
     if (input.state.keys.has('KeyR')) weapon.reload();
     accumulator += dt;
@@ -357,6 +500,8 @@ function frame(now) {
     if (accumulator > FIXED_STEP * 5) accumulator = 0;
     syncCamera();
   }
+  // The harbour beacon blinks once a second and a half.
+  world.beacon.visible = Math.floor(elapsed * 1.5) % 2 === 0;
   renderer.render(scene, camera);
 }
 
@@ -398,14 +543,14 @@ function runShot(name) {
   resetRoundPositions();
   bots.setFrozen(true);
   if (name === 'start') {
-    body.position.set(0, 0, 16);
-    body.yaw = 0.15;
-    body.pitch = 0.02;
+    body.position.set(0, 0, 24);
+    body.yaw = 0.12;
+    body.pitch = 0.01;
     settle(10);
     hud.showOverlay('start');
     hud.setTimer(BUY_SECONDS);
   } else if (name === 'buy') {
-    body.position.set(-2, 0, 17);
+    body.position.set(-2, 0, 21);
     aimAt(new THREE.Vector3(-6, 1.4, 4));
     settle(10);
     match.state.money = 4150;
@@ -419,21 +564,26 @@ function runShot(name) {
     hud.setScore(2, 1);
     hud.setTimer(84);
     weapon.equip('falcon');
-    body.position.set(6, 0, 6);
+    // A smoke cloud blooming down Crane Row, right behind the target, then a
+    // firefight in the open.
+    camera.getWorldDirection(aimDir);
+    grenades.throwGrenade('smoke', new THREE.Vector3(4, 1.5, 6), new THREE.Vector3(0.45, 0.1, -0.88).normalize(), 8);
+    settle(90);
+    body.position.set(6, 0, 8);
     const target = bots.bots.find((b) => b.team === 'sentinel' && b.alive);
     if (target) {
-      target.position.set(8, 0, -1);
+      target.position.set(6.5, 0, -3.5);
       target.body.group.position.copy(target.position);
       target.body.group.rotation.y = Math.PI;
       const second = bots.bots.find((b) => b.team === 'sentinel' && b.alive && b !== target);
       if (second) {
-        second.position.set(12, 0, -4);
+        second.position.set(13, 0, -5);
         second.body.group.position.copy(second.position);
         second.body.group.rotation.y = Math.PI / 2;
       }
-      aimAt(new THREE.Vector3(8, 1.35, -1));
+      aimAt(new THREE.Vector3(6.5, 1.35, -3.5));
       settle(6);
-      shoot(0);
+      shoot();
       settle(2);
     }
     hud.killfeed('Rook', 'Warden', false);
@@ -444,11 +594,11 @@ function runShot(name) {
     match.state.scoreV = 3;
     match.state.scoreS = 2;
     hud.setScore(3, 2);
-    match.plantSpike('A', new THREE.Vector3(-24, 0, -13));
+    match.plantSpike('A', new THREE.Vector3(-28, 0, -14));
     match.state.spike.timer = 12.4;
     hud.setSpike(12.4);
     body.position.set(-14, 0, -4);
-    aimAt(new THREE.Vector3(-24, 1.2, -13));
+    aimAt(new THREE.Vector3(-28, 1.2, -14));
     settle(10);
     hud.banner('ROUND WON', 'Round 5 · Spike detonated at Site A', true);
     updateAliveHud();
@@ -460,12 +610,13 @@ function runShot(name) {
 
 // A small read-only handle for automated play-tests (and for players who want to
 // script the game): the match phase, the bots and the player's own state.
-window.__meridian = {
+window.__saltline = {
   get phase() { return match.state.phase; },
   get round() { return match.state.round; },
   get score() { return [match.state.scoreV, match.state.scoreS]; },
   get money() { return match.state.money; },
   get spike() { return match.state.spike.status; },
+  get grenades() { return { flash: loadout.flash, smoke: loadout.smoke, selected: loadout.selected }; },
   get player() {
     return {
       x: +body.position.x.toFixed(2), z: +body.position.z.toFixed(2),
@@ -475,7 +626,7 @@ window.__meridian = {
   },
   get bots() {
     return bots.bots.map((b) => ({
-      name: b.name, team: b.team, alive: b.alive, hp: Math.ceil(b.health),
+      name: b.name, team: b.team, role: b.role, state: b.state, alive: b.alive, hp: Math.ceil(b.health),
       x: +b.position.x.toFixed(1), z: +b.position.z.toFixed(1),
     }));
   },
@@ -493,6 +644,7 @@ resetRoundPositions();
 hud.setHealth(100, 0);
 hud.setAmmo(weapon.state.mag, weapon.state.reserve, weapon.def().name);
 hud.setMoney(800);
+hud.setGrenades(1, 1, 'flash');
 hud.showOverlay('start');
 syncCamera();
 if (shot) runShot(shot);

@@ -1,4 +1,4 @@
-// Meridian Yard: a round-based tactical FPS in three.js (Node 22, standard library only).
+// Saltline Terminal: a round-based tactical FPS in three.js (Node 22, standard library only).
 // The game itself is game/ — static files the browser loads as ES modules, three.js from
 // an import map, no build step and no network request. This program hands it in: it copies
 // game/ and screenshots/ from beside this file to /output and writes /output/dossier.json,

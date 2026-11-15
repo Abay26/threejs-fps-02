@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Meridian Yard — a three.js tactical FPS</title>
+<title>Saltline Terminal — a three.js tactical FPS</title>
 <style>
-  /* Look plan: dusk canvas, dark surfaces, ink text, muted labels, amber Vanguard. */
+  /* Look plan: night canvas, dark steel surfaces, ink text, muted labels, amber Vanguard. */
   :root {
-    --canvas: #191512;
-    --surface: #221d18;
-    --hairline: #3a332a;
-    --ink: #efe9dc;
-    --muted: #a49c8c;
+    --canvas: #0a0e16;
+    --surface: #141a24;
+    --hairline: #2b3442;
+    --ink: #e8ecf2;
+    --muted: #9aa3b0;
     --accent: #f0a830;
     --teal: #2e9f96;
     --red: #e2483d;
@@ -45,6 +45,21 @@
     background: radial-gradient(ellipse at center, transparent 55%, rgba(226, 72, 61, 0.5) 100%); }
   #damage.on { opacity: 1; }
 
+  /* Damage direction: a red arc at the screen edge, rotated to the shot's bearing. */
+  #damage-dir { position: fixed; left: 50%; top: 50%; width: 120px; height: 120px; transform: translate(-50%, -50%) rotate(var(--rot, 0deg)); opacity: 0; pointer-events: none; }
+  #damage-dir.on { opacity: 1; transition: opacity 300ms linear; }
+  #damage-dir i { position: absolute; left: 50%; top: -6px; width: 34px; height: 10px; transform: translateX(-50%); background: var(--red); border-radius: 5px; box-shadow: 0 0 12px var(--red); }
+
+  /* Flashbang white-out, faded by script. */
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity 900ms linear; }
+
+  /* Sniper scope: a dark ring with cross lines. */
+  #scope { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(circle at center, transparent 34%, rgba(0,0,0,0.97) 36%); }
+  #scope[hidden] { display: none; }
+  #scope::before, #scope::after { content: ''; position: absolute; background: rgba(232,236,242,0.85); }
+  #scope::before { left: 50%; top: 0; bottom: 0; width: 1px; transform: translateX(-0.5px); }
+  #scope::after { top: 50%; left: 0; right: 0; height: 1px; transform: translateY(-0.5px); }
+
   #topbar { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 14px;
     font-family: var(--font-readout); font-size: 14px; }
   #topbar .team { display: flex; align-items: center; gap: 6px; color: var(--muted); }
@@ -54,8 +69,9 @@
   #timer { font-size: 24px; color: var(--ink); min-width: 64px; text-align: center; }
   #timer.low { color: var(--red); }
   .alive { font-size: 11px; letter-spacing: 2px; }
+  #rounds { position: fixed; top: 48px; left: 50%; transform: translateX(-50%); font-family: var(--font-readout); font-size: 12px; letter-spacing: 4px; color: var(--muted); }
 
-  #minimap { position: fixed; top: 18px; right: 20px; width: 148px; height: 108px; border: 1px solid var(--hairline); background: rgba(20,18,14,0.6); }
+  #minimap { position: fixed; top: 18px; right: 20px; width: 148px; height: 108px; border: 1px solid var(--hairline); background: rgba(10,14,22,0.6); }
   #killfeed { position: fixed; top: 136px; right: 20px; display: grid; gap: 4px; font-size: 13px; color: var(--muted); text-align: right; }
   #killfeed b { color: var(--ink); }
 
@@ -75,6 +91,10 @@
   #weapon-name { font-size: 13px; color: var(--muted); margin-top: 2px; }
   #money { font-size: 18px; color: var(--accent); margin-top: 4px; }
 
+  #grenades { position: fixed; right: 32px; bottom: 130px; display: flex; gap: 10px; font-family: var(--font-readout); font-size: 14px; color: var(--muted); }
+  #grenades span { border: 1px solid var(--hairline); border-radius: 4px; padding: 4px 8px; background: rgba(10,14,22,0.6); }
+  #grenades span.selected { border-color: var(--accent); color: var(--ink); }
+
   #banner { position: fixed; top: 22%; left: 50%; transform: translateX(-50%); text-align: center; }
   #banner[hidden] { display: none; }
   #banner-title { font-size: 44px; font-weight: 600; letter-spacing: 0.04em; }
@@ -92,7 +112,7 @@
     color: var(--red); font-size: 14px; }
   #spike[hidden] { display: none; }
 
-  #buy { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(520px, 92vw);
+  #buy { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, 92vw);
     background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-panel);
     padding: 20px 24px; pointer-events: auto; }
   #buy[hidden] { display: none; }
@@ -102,7 +122,7 @@
   .buy-item { display: grid; grid-template-columns: 28px 1fr auto; gap: 4px 10px; width: 100%; text-align: left;
     padding: 10px 8px; background: none; border: none; border-bottom: 1px solid var(--hairline);
     color: var(--ink); font: inherit; cursor: pointer; }
-  .buy-item:hover:not(.disabled) { background: #2c261e; }
+  .buy-item:hover:not(.disabled) { background: #1d2634; }
   .buy-item.disabled { opacity: 0.45; cursor: default; }
   .buy-key { grid-column: 1; grid-row: 1; font-family: var(--font-readout); color: var(--accent); }
   .buy-name { grid-column: 2; grid-row: 1; font-weight: 600; }
@@ -110,9 +130,9 @@
   .buy-price { grid-column: 3; grid-row: 1 / span 2; align-self: center; font-family: var(--font-readout); color: var(--accent); }
 
   .overlay { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px;
-    background: rgba(25, 21, 18, 0.82); }
+    background: rgba(10, 14, 22, 0.82); }
   .overlay[hidden] { display: none; }
-  .panel { width: min(460px, 100%); padding: 32px; background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-panel); }
+  .panel { width: min(480px, 100%); padding: 32px; background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-panel); }
   .panel h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.15; font-weight: 600; letter-spacing: -0.02em; }
   .panel h1 .tag { color: var(--accent); }
   .panel p { margin: 0 0 24px; font-size: 16px; line-height: 1.5; color: var(--muted); }
@@ -130,6 +150,9 @@
 
 <div id="hud" aria-hidden="true">
   <div id="damage"></div>
+  <div id="damage-dir"><i></i></div>
+  <div id="flash"></div>
+  <div id="scope" hidden></div>
   <div id="crosshair"><i></i><i></i><i></i><i></i><i></i></div>
   <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
 
@@ -138,6 +161,7 @@
     <div id="timer">1:40</div>
     <div class="team s"><span class="alive" id="alive-s">●●●●●</span><b id="score-s">0</b><span>SENTINEL</span></div>
   </div>
+  <div id="rounds"></div>
   <canvas id="minimap" width="148" height="108"></canvas>
   <div id="killfeed"></div>
 
@@ -147,6 +171,7 @@
     <div id="armor-line">ARMOR <span id="armor-num">0</span></div>
   </div>
 
+  <div id="grenades"><span id="grenade-flash">◉ 1</span><span id="grenade-smoke">☁ 1</span></div>
   <div id="ammo">
     <span class="mag" id="ammo-mag">12</span><span id="ammo-reserve">/ 36</span>
     <div id="weapon-name">Kestrel</div>
@@ -166,14 +191,14 @@
 
 <div id="overlay" class="overlay">
   <section class="panel" role="dialog" aria-modal="true" aria-labelledby="overlay-title">
-    <h1 id="overlay-title">MERIDIAN <span class="tag">YARD</span></h1>
-    <p id="overlay-copy">A round-based tactical FPS. Plant the spike at A or B, or eliminate the Sentinel team. Buy between rounds — accuracy beats speed.</p>
+    <h1 id="overlay-title">SALTLINE <span class="tag">TERMINAL</span></h1>
+    <p id="overlay-copy">A round-based tactical FPS at a night container port. Plant the spike at A or B, or eliminate the Sentinel team. Buy between rounds — accuracy beats speed.</p>
     <button id="play" type="button">Click to play</button>
     <ul class="keys">
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move · <kbd>Shift</kbd> Sprint · <kbd>Ctrl</kbd> Crouch</li>
-      <li><kbd>Mouse</kbd> Look · <kbd>Click</kbd> Fire · <kbd>R</kbd> Reload</li>
-      <li><kbd>E</kbd> Plant / defuse the spike (hold)</li>
-      <li><kbd>B</kbd> Buy menu · <kbd>1</kbd>–<kbd>5</kbd> Buy · <kbd>Space</kbd> Jump</li>
+      <li><kbd>Mouse</kbd> Look · <kbd>Click</kbd> Fire · <kbd>R</kbd> Reload · <kbd>Right-click</kbd> Scope (Mastiff)</li>
+      <li><kbd>E</kbd> Plant / defuse the spike (hold) · <kbd>G</kbd> Throw grenade · <kbd>Q</kbd> Switch flash / smoke</li>
+      <li><kbd>B</kbd> Buy menu · <kbd>1</kbd>–<kbd>8</kbd> Buy · <kbd>Space</kbd> Jump</li>
     </ul>
   </section>
 </div>

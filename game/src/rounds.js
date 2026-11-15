@@ -1,7 +1,10 @@
-// The match: rounds, the economy, and the spike. A round is a buy phase, a live phase
-// and a short banner, then the next round. Vanguard wins a round by eliminating Sentinel
-// or detonating the spike; Sentinel wins by elimination, by running the clock out, or by
-// defusing. First to 5 rounds takes the match, at most 9 rounds.
+// The match: rounds, the economy, and the spike. A round is a buy phase, a live
+// phase and a short banner, then the next round. Vanguard wins a round by eliminating
+// Sentinel or detonating the spike; Sentinel wins by elimination, by running the
+// clock out, or by defusing. First to 5 rounds takes the match, at most 9 rounds.
+// The economy is Counter-Strike-shaped: a win pays $3,250, a loss pays more the
+// longer the streak runs, kills pay $300, and the shop sells guns, armour and the
+// two grenades — a flash for $200, a smoke for $300.
 import * as THREE from 'three';
 
 export const BUY_SECONDS = 15;
@@ -11,6 +14,8 @@ export const DEFUSE_SECONDS = 5;
 export const SPIKE_FUSE = 35;
 export const WIN_ROUNDS = 5;
 export const MAX_ROUNDS = 9;
+export const FLASH_PRICE = 200;
+export const SMOKE_PRICE = 300;
 
 export function createMatch(deps) {
   const { hud, audio } = deps;
@@ -22,6 +27,7 @@ export function createMatch(deps) {
     money: 800,
     lossStreak: 0,
     timeLeft: BUY_SECONDS,
+    roundHistory: [], // 'W' | 'L' per finished round, for the HUD dots
     spike: { status: 'carried', site: null, position: new THREE.Vector3(), timer: 0, carrier: 'player' },
   };
 
@@ -37,10 +43,12 @@ export function createMatch(deps) {
     state.scoreS = 0;
     state.money = 800;
     state.lossStreak = 0;
+    state.roundHistory = [];
     state.spike = { status: 'carried', site: null, position: new THREE.Vector3(), timer: 0, carrier: 'player' };
     hud.setScore(0, 0);
     hud.setMoney(800);
     hud.setSpike(null);
+    hud.setRoundHistory([]);
     setPhase('buy', BUY_SECONDS);
     hud.banner('ROUND 1', 'Buy phase — press B to open the shop', true);
   }
@@ -59,16 +67,19 @@ export function createMatch(deps) {
       state.scoreV += 1;
       state.money += 3250;
       state.lossStreak = 0;
+      state.roundHistory.push('W');
       audio.roundWin();
     } else {
       state.scoreS += 1;
       state.lossStreak += 1;
       state.money += Math.min(2900, 1400 + state.lossStreak * 500);
+      state.roundHistory.push('L');
       audio.roundLose();
     }
     hud.setScore(state.scoreV, state.scoreS);
     hud.setMoney(state.money);
     hud.setSpike(null);
+    hud.setRoundHistory(state.roundHistory);
     setPhase('ended', 4);
     const reasonText = {
       elimination: won ? 'Sentinel team eliminated' : 'Vanguard team eliminated',
@@ -112,14 +123,12 @@ export function createMatch(deps) {
     hud.setMoney(state.money);
   }
 
-  function buyWeapon(id, price) {
-    if (state.phase !== 'buy' || state.money < price) return false;
-    state.money -= price;
+  function addPlantReward() {
+    state.money += 300;
     hud.setMoney(state.money);
-    return true;
   }
 
-  function buyArmor(price) {
+  function buy(item, price) {
     if (state.phase !== 'buy' || state.money < price) return false;
     state.money -= price;
     hud.setMoney(state.money);
@@ -133,6 +142,7 @@ export function createMatch(deps) {
       if (state.phase === 'buy' && state.timeLeft <= 0) {
         setPhase('live', ROUND_SECONDS);
         hud.banner('GO GO GO', 'Round live — plant the spike or eliminate Sentinel', true);
+        audio.horn();
         deps.onRoundLive();
       } else if (state.phase === 'live' && state.timeLeft <= 0) {
         endRound('sentinel', 'time');
@@ -155,7 +165,6 @@ export function createMatch(deps) {
       state.spike.timer -= dt;
       hud.setSpike(state.spike.timer);
       if (Math.ceil(state.spike.timer * 2) !== Math.ceil((state.spike.timer + dt) * 2)) {
-        // Beep twice a second while the fuse runs.
         if (state.spike.timer < 10) audio.beep();
       }
       if (state.spike.timer <= 0) {
@@ -167,6 +176,6 @@ export function createMatch(deps) {
 
   return {
     state, startMatch, startRound, endRound, plantSpike, defuseSpike, dropSpike,
-    addKillReward, buyWeapon, buyArmor, step,
+    addKillReward, addPlantReward, buy, step,
   };
 }

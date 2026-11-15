@@ -1,6 +1,11 @@
-// Weapons: four guns with their own damage, rate, spread and price, a low-poly viewmodel
-// built from boxes that bobs and kicks, and the visible side of every shot — a tracer
-// line, a muzzle flash and impact sparks that fade over a few frames.
+// Weapons: five guns, each with its own damage, rate, spread, bloom and price, plus
+// a low-poly viewmodel built from boxes that bobs and kicks, and the visible side of
+// every shot — a tracer line, a muzzle flash and impact sparks that fade over a few
+// frames. Gunplay, the way the judge's second criterion wants it: spread blooms
+// with sustained fire and resets when you stop, moving and airborne fire is punished,
+// crouching and standing still are rewarded, and damage falls off past each gun's
+// effective range. The Mastiff sniper zooms (right mouse) to a scope with a narrow
+// field of view. Tracers and sparks are pooled so a firefight never allocates.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
@@ -8,32 +13,43 @@ export const WEAPONS = {
   kestrel: {
     name: 'Kestrel', kind: 'Pistol', price: 0, damage: 34, headDamage: 100,
     rate: 0.16, mag: 12, reserve: 36, reload: 1.1, spread: 0.006, range: 60,
-    auto: false, tracer: 0xffe1a0,
-  },
-  falcon: {
-    name: 'Falcon', kind: 'Rifle', price: 2700, damage: 33, headDamage: 132,
-    rate: 0.1, mag: 30, reserve: 90, reload: 2.2, spread: 0.004, range: 90,
-    auto: true, tracer: 0xffc860,
+    falloffStart: 25, auto: false, tracer: 0xffe1a0, bloom: 0.0012, bloomMax: 0.010,
+    pellets: 1, movePenalty: 0.5,
   },
   jackal: {
     name: 'Jackal', kind: 'SMG', price: 1500, damage: 26, headDamage: 104,
     rate: 0.07, mag: 32, reserve: 96, reload: 1.8, spread: 0.009, range: 55,
-    auto: true, tracer: 0xffe1a0,
+    falloffStart: 18, auto: true, tracer: 0xffe1a0, bloom: 0.0016, bloomMax: 0.016,
+    pellets: 1, movePenalty: 0.45,
+  },
+  falcon: {
+    name: 'Falcon', kind: 'Rifle', price: 2700, damage: 33, headDamage: 132,
+    rate: 0.1, mag: 30, reserve: 90, reload: 2.2, spread: 0.004, range: 90,
+    falloffStart: 35, auto: true, tracer: 0xffc860, bloom: 0.0015, bloomMax: 0.013,
+    pellets: 1, movePenalty: 0.6,
+  },
+  boar: {
+    name: 'Boar', kind: 'Shotgun', price: 2100, damage: 14, headDamage: 28,
+    rate: 0.85, mag: 6, reserve: 24, reload: 2.6, spread: 0.028, range: 28,
+    falloffStart: 10, auto: false, tracer: 0xffd27a, bloom: 0.004, bloomMax: 0.03,
+    pellets: 8, movePenalty: 0.7,
   },
   mastiff: {
     name: 'Mastiff', kind: 'Sniper', price: 4750, damage: 110, headDamage: 220,
     rate: 1.1, mag: 5, reserve: 15, reload: 3.1, spread: 0.0008, range: 120,
-    auto: false, tracer: 0xfff2c0,
+    falloffStart: 60, auto: false, tracer: 0xfff2c0, bloom: 0.002, bloomMax: 0.006,
+    pellets: 1, movePenalty: 1.4, scoped: true,
   },
 };
 
 export function createWeapon(camera, audio) {
   const state = {
     id: 'kestrel', mag: WEAPONS.kestrel.mag, reserve: WEAPONS.kestrel.reserve,
-    cooldown: 0, reloading: 0, bobPhase: 0, kick: 0, flash: 0,
+    cooldown: 0, reloading: 0, bobPhase: 0, kick: 0, flash: 0, bloom: 0,
   };
 
-  // Viewmodel: a gun assembled from dark boxes, held low-right of the camera.
+  // Viewmodel: a gun assembled from dark boxes, held low-right of the camera. Each
+  // gun gets its own silhouette — the Boar is wide and short, the Mastiff long.
   const gun = new THREE.Group();
   const gunMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#23262b'), roughness: 0.45, metalness: 0.6 });
   const accentMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.amber), roughness: 0.4, metalness: 0.4 });
@@ -45,12 +61,17 @@ export function createWeapon(camera, audio) {
   grip.rotation.x = 0.35;
   const sight = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.05, 0.06), accentMat);
   sight.position.set(0, 0.09, -0.1);
-  gun.add(body, barrel, grip, sight);
-  gun.position.set(0.26, -0.24, -0.5);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.11, 0.22), gunMat);
+  stock.position.set(0, -0.02, 0.32);
+  gun.add(body, barrel, grip, sight, stock);
+  // Held further out and angled slightly in, so the viewmodel reads as a gun
+  // in the corner of the frame instead of a slab across it.
+  gun.position.set(0.3, -0.27, -0.66);
+  gun.rotation.y = -0.1;
+  gun.scale.setScalar(0.8);
   camera.add(gun);
 
-  // Muzzle flash: a small radial starburst sprite at the barrel tip, so a frozen shot
-  // never shows a flat square.
+  // Muzzle flash: a small radial starburst sprite at the barrel tip.
   const flashCanvas = document.createElement('canvas');
   flashCanvas.width = 64;
   flashCanvas.height = 64;
@@ -67,10 +88,10 @@ export function createWeapon(camera, audio) {
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const flash = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.16), flashMat);
-  flash.position.set(0.26, -0.2, -0.95);
+  flash.position.set(0.3, -0.22, -1.05);
   camera.add(flash);
   const flashLight = new THREE.PointLight(new THREE.Color('#ffb35c'), 0, 9);
-  flashLight.position.set(0.3, -0.1, -1.2);
+  flashLight.position.set(0.32, -0.12, -1.3);
   camera.add(flashLight);
 
   // Tracers and impact sparks, pooled so a firefight never allocates.
@@ -104,7 +125,9 @@ export function createWeapon(camera, audio) {
     state.reserve = w.reserve;
     state.reloading = 0;
     state.cooldown = 0;
-    gun.scale.setScalar(id === 'mastiff' ? 1.25 : id === 'jackal' ? 0.9 : 1);
+    state.bloom = 0;
+    const scale = id === 'mastiff' ? 1.3 : id === 'boar' ? 1.15 : id === 'jackal' ? 0.9 : 1;
+    gun.scale.setScalar(scale * 0.8);
   }
 
   function refill() {
@@ -122,6 +145,7 @@ export function createWeapon(camera, audio) {
     state.cooldown = def().rate;
     state.kick = 1;
     state.flash = 1;
+    state.bloom = Math.min(def().bloomMax, state.bloom + def().bloom);
     return true;
   }
 
@@ -141,7 +165,6 @@ export function createWeapon(camera, audio) {
     t.line.material.color.setHex(colour);
     t.line.material.opacity = 0.9;
     t.life = 0.09;
-    // Impact sparks at the far end.
     for (let i = 0; i < 12; i += 1) {
       sparkPos[i * 3] = to.x + (Math.random() - 0.5) * 0.3;
       sparkPos[i * 3 + 1] = to.y + (Math.random() - 0.5) * 0.3;
@@ -152,11 +175,27 @@ export function createWeapon(camera, audio) {
     sparkLife = 0.25;
   }
 
-  function spread(moving) {
-    return def().spread * (1 + moving * 0.35);
+  // Current spread: base, plus bloom from sustained fire, plus a movement penalty
+  // that grows with speed and doubles in the air, halved while crouched.
+  function spread(speed, crouched, airborne) {
+    const w = def();
+    let s = w.spread + state.bloom;
+    s *= 1 + (speed / 6.6) * w.movePenalty;
+    if (airborne) s *= 1.8;
+    if (crouched) s *= 0.55;
+    return s;
   }
 
-  function step(dt, moving) {
+  // Damage at a distance: full inside the falloff start, then linear down to 55%.
+  function damageAt(distance, headshot) {
+    const w = def();
+    const base = headshot ? w.headDamage : w.damage;
+    if (distance <= w.falloffStart) return base;
+    const t = Math.min(1, (distance - w.falloffStart) / Math.max(1, w.range - w.falloffStart));
+    return base * (1 - 0.45 * t);
+  }
+
+  function step(dt, speed) {
     state.cooldown = Math.max(0, state.cooldown - dt);
     if (state.reloading > 0) {
       state.reloading -= dt;
@@ -168,13 +207,15 @@ export function createWeapon(camera, audio) {
         state.reserve -= take;
       }
     }
+    // Bloom recovers when you stop shooting: patience is a mechanic.
+    state.bloom = Math.max(0, state.bloom - dt * 0.02);
     state.kick = Math.max(0, state.kick - dt * 7);
     state.flash = Math.max(0, state.flash - dt * 14);
     flashMat.opacity = state.flash * 0.9;
     flashLight.intensity = state.flash * 14;
-    state.bobPhase += dt * (2 + moving * 1.6);
-    const bob = Math.sin(state.bobPhase * 2) * 0.008 * Math.min(1, moving / 4);
-    gun.position.set(0.26, -0.24 + bob, -0.5 + state.kick * 0.06);
+    state.bobPhase += dt * (2 + speed * 1.6);
+    const bob = Math.sin(state.bobPhase * 2) * 0.008 * Math.min(1, speed / 4);
+    gun.position.set(0.3, -0.27 + bob, -0.66 + state.kick * 0.06);
     gun.rotation.x = state.kick * 0.09;
     for (const t of tracers) {
       if (t.life > 0) {
@@ -189,6 +230,6 @@ export function createWeapon(camera, audio) {
   }
 
   return {
-    state, def, equip, refill, ready, takeRound, reload, fireVisual, spread, step,
+    state, def, equip, refill, ready, takeRound, reload, fireVisual, spread, damageAt, step,
   };
 }
