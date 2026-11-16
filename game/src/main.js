@@ -1,14 +1,22 @@
-// Saltline Terminal v3: a round-based tactical FPS in three.js. Boot and the one loop:
+// Saltline Terminal v4: a round-based tactical FPS in three.js. Boot and the one loop:
 // a fixed 60 Hz simulation feeding a render at the display's rate. ?shot=start|play|
 // buy|end with &seed=N sets up a deterministic frame for a capture, renders it twice,
 // then freezes it and sets window.__shotReady.
 //
-// What v3 adds over v2: the match is played as a plan — every round both teams pick
-// a strat (A split, B rush, mid control, fake A) and the bots execute it together,
-// the entry fragger flashing the site first, with radio callouts on the HUD; every
-// bot buys to its own wallet's tier, so the economy is a team decision; rifles aim
-// down sights on right mouse; every gun's recoil follows a learnable pattern; and
-// a defuse kit in the shop halves the defuse time.
+// What v4 adds over v3: the round is played as a team all the way through. A bot
+// that wedges on a container face sidesteps free and re-plans instead of standing
+// there until the fuse runs out (the v3 retake bug); once the spike is down the
+// attackers spread to post-plant off-angles while the retake splits into one
+// defuser and covers holding the hall approaches; two deaths on the push rotate
+// the whole attack to the other site; a save round is a team decision from the
+// average wallet, not five solo buys; a site-holder's hit call rotates the mid
+// rover to reinforce; duels are fought planted at range and strafing up close,
+// with burst discipline by distance and a role aim skill; and the last bot alive
+// plays a clutch — faster reactions, straight for the defuse. The carrier plants
+// the moment he is inside the site instead of duelling on it, pushes instead of
+// taking long duels, and the spike's recovery names the site the whole team plays
+// for; the entry flash goes off at the site door, not from spawn, and a B rush
+// pushes as one pack with two flashes.
 //
 // The simulation is one state store: the match (rounds, money, spike), the player,
 // the bots, the grenades and the senses all read and write the same objects, and the
@@ -289,6 +297,7 @@ function resetRoundPositions() {
   bots.spawnRound(random, currentPlan);
   hud.setStrat(currentPlan.vanguard.name);
   hud.comms(`STRAT: ${currentPlan.vanguard.name} — ${currentPlan.vanguard.call}`);
+  if (bots.lastEconomy?.call) hud.comms(CALLOUTS.eco(bots.lastEconomy.call));
   for (const bot of bots.bots) {
     bot.smokedSite = false;
     bot.investigate = null;
@@ -733,6 +742,8 @@ window.__saltline = {
       // Debug fields for play-tests: the waypoint path the bot is walking.
       path: b.path, pathIndex: b.pathIndex, slot: { x: +b.slot.x.toFixed(1), z: +b.slot.z.toFixed(1) },
       speed: +b.speed.toFixed(2), stratLane: b.stratLane,
+      stuckCount: b.stuckCount, retakeRole: b.retakeRole, postPlant: b.postPlant, clutch: b.clutch,
+      hasSpike: b.hasSpike, site: b.site,
       investigate: b.investigate ? [+b.investigate.x.toFixed(1), +b.investigate.z.toFixed(1)] : null,
     }));
   },

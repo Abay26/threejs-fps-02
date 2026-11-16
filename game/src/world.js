@@ -34,16 +34,21 @@ export const WAYPOINTS = [
   { id: 2, p: [0, 12], n: [0, 5, 6] }, // crane row south
   { id: 3, p: [14, 14], n: [0, 5, 7] },
   { id: 4, p: [-24, 4], n: [1, 5, 6, 8, 15] }, // west flank
-  { id: 5, p: [0, 0], n: [2, 3, 4, 6, 7] }, // crane row
+  { id: 5, p: [2, 0], n: [2, 3, 4, 6, 7] }, // crane row (x=2, not 0: the
+  // 2->5 lane at x=0 grazes the east face of the mid container stack, and a
+  // bot walking it wedges on the stack's south face — the v3 Kite wedge)
   { id: 6, p: [-10, -2], n: [1, 2, 4, 5, 9, 17] },
   { id: 7, p: [24, 4], n: [3, 5, 10, 16] }, // east flank
   { id: 8, p: [-28, -6], n: [4, 9, 11, 13, 15] }, // A approach
   { id: 9, p: [-14, -10], n: [6, 8, 11, 12] },
   { id: 10, p: [28, -6], n: [7, 11, 13, 14, 16] }, // B approach
   { id: 11, p: [14, -10], n: [8, 9, 10, 12] },
-  { id: 12, p: [0, -20], n: [9, 11, 14, 17, 18] }, // sentinel spawn
+  { id: 12, p: [0, -20], n: [9, 11, 17, 18] }, // sentinel spawn (no 14:
+  // the 12->14 lane cuts the south-west corner of the site-B container, and
+  // a bot walking it wedges there — the v3 Sable wedge; B is reached via 11)
   { id: 13, p: [-26, -15], n: [8, 10, 14] }, // site A (2 m east of the stack, so the approach clears its face)
-  { id: 14, p: [26, -15], n: [10, 12, 13] }, // site B (same, mirrored)
+  { id: 14, p: [26, -15], n: [10, 13] }, // site B (same, mirrored; reached
+  // from spawn via 11, not straight from 12 — see 12)
   { id: 15, p: [-32, 8], n: [4, 8] }, // west wall lane
   { id: 16, p: [32, 8], n: [7, 10] }, // east wall lane
   { id: 17, p: [-6, -14], n: [6, 12] }, // hall west (the 17-9 lane runs through a column, so it is not one)
